@@ -80,7 +80,14 @@
 
 #define IORING_MAX_ENTRIES	32768
 #define IORING_MAX_CQ_ENTRIES	(2 * IORING_MAX_ENTRIES)
-#define IORING_MAX_FIXED_FILES	1024
+
+/*
+ * Shift of 9 is 512 entries, or exactly one page on 64-bit archs
+ */
+#define IORING_FILE_TABLE_SHIFT	9
+#define IORING_MAX_FILES_TABLE	(1U << IORING_FILE_TABLE_SHIFT)
+#define IORING_FILE_TABLE_MASK	(IORING_MAX_FILES_TABLE - 1)
+#define IORING_MAX_FIXED_FILES	(64 * IORING_MAX_FILES_TABLE)
 
 struct io_uring {
 	u32 head ____cacheline_aligned_in_smp;
@@ -165,6 +172,10 @@ struct io_mapped_ubuf {
 	unsigned int	nr_bvecs;
 };
 
+struct fixed_file_table {
+	struct file		**files;
+};
+
 struct io_ring_ctx {
 	struct {
 		struct percpu_ref	refs;
@@ -196,6 +207,8 @@ struct io_ring_ctx {
 
 		struct list_head	defer_list;
 		struct list_head	timeout_list;
+
+		wait_queue_head_t	inflight_wait;
 	} ____cacheline_aligned_in_smp;
 
 	/* IO offload */
@@ -223,7 +236,7 @@ struct io_ring_ctx {
 	 * readers must ensure that ->refs is alive as long as the file* is
 	 * used. Only updated through io_uring_register(2).
 	 */
-	struct file		**user_files;
+	struct fixed_file_table	*file_table;
 	unsigned		nr_user_files;
 
 	/* if used, fixed mapped user buffers */
@@ -250,6 +263,9 @@ struct io_ring_ctx {
 		 */
 		struct list_head	poll_list;
 		struct list_head	cancel_list;
+
+		spinlock_t		inflight_lock;
+		struct list_head	inflight_list;
 	} ____cacheline_aligned_in_smp;
 
 #if defined(CONFIG_UNIX)
@@ -259,6 +275,8 @@ struct io_ring_ctx {
 
 struct sqe_submit {
 	const struct io_uring_sqe	*sqe;
+	struct file			*ring_file;
+	int				ring_fd;
 	u32				sequence;
 	bool				has_user;
 	bool				in_async;
@@ -317,9 +335,12 @@ struct io_kiocb {
 #define REQ_F_TIMEOUT		1024	/* timeout request */
 #define REQ_F_ISREG		2048	/* regular file */
 #define REQ_F_MUST_PUNT		4096	/* must be punted even for NONBLOCK */
+#define REQ_F_INFLIGHT		8192	/* on inflight list */
 	u64			user_data;
 	u32			result;
 	u32			sequence;
+
+	struct list_head	inflight_entry;
 
 	struct io_wq_work	work;
 };
@@ -401,6 +422,9 @@ static struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->cancel_list);
 	INIT_LIST_HEAD(&ctx->defer_list);
 	INIT_LIST_HEAD(&ctx->timeout_list);
+	init_waitqueue_head(&ctx->inflight_wait);
+	spin_lock_init(&ctx->inflight_lock);
+	INIT_LIST_HEAD(&ctx->inflight_list);
 	return ctx;
 }
 
@@ -670,9 +694,20 @@ static void io_free_req_many(struct io_ring_ctx *ctx, void **reqs, int *nr)
 
 static void __io_free_req(struct io_kiocb *req)
 {
+	struct io_ring_ctx *ctx = req->ctx;
+
 	if (req->file && !(req->flags & REQ_F_FIXED_FILE))
 		fput(req->file);
-	percpu_ref_put(&req->ctx->refs);
+	if (req->flags & REQ_F_INFLIGHT) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&ctx->inflight_lock, flags);
+		list_del(&req->inflight_entry);
+		if (waitqueue_active(&ctx->inflight_wait))
+			wake_up(&ctx->inflight_wait);
+		spin_unlock_irqrestore(&ctx->inflight_lock, flags);
+	}
+	percpu_ref_put(&ctx->refs);
 	kmem_cache_free(req_cachep, req);
 }
 
@@ -1662,6 +1697,38 @@ static int io_recvmsg(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 #endif
 }
 
+static int io_accept(struct io_kiocb *req, const struct io_uring_sqe *sqe,
+		     struct io_kiocb **nxt, bool force_nonblock)
+{
+#if defined(CONFIG_NET)
+	struct sockaddr __user *addr;
+	int __user *addr_len;
+	unsigned file_flags;
+	int flags, ret;
+
+	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+		return -EINVAL;
+
+	addr = (struct sockaddr __user *) (unsigned long) READ_ONCE(sqe->addr);
+	addr_len = (int __user *) (unsigned long) READ_ONCE(sqe->addr2);
+	flags = READ_ONCE(sqe->accept_flags);
+	file_flags = force_nonblock ? O_NONBLOCK : 0;
+
+	ret = __sys_accept4_file(req->file, file_flags, addr, addr_len, flags);
+	if (ret == -EAGAIN && force_nonblock) {
+		req->work.flags |= IO_WQ_WORK_NEEDS_FILES;
+		return -EAGAIN;
+	}
+	if (ret < 0 && (req->flags & REQ_F_LINK))
+		req->flags |= REQ_F_FAIL_LINK;
+	io_cqring_add_event(req->ctx, sqe->user_data, ret);
+	io_put_req(req, nxt);
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 static void io_poll_remove_one(struct io_kiocb *req)
 {
 	struct io_poll_iocb *poll = &req->poll;
@@ -2146,6 +2213,9 @@ static int __io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	case IORING_OP_TIMEOUT_REMOVE:
 		ret = io_timeout_remove(req, s->sqe);
 		break;
+	case IORING_OP_ACCEPT:
+		ret = io_accept(req, s->sqe, nxt, force_nonblock);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -2232,6 +2302,15 @@ static bool io_op_needs_file(const struct io_uring_sqe *sqe)
 	}
 }
 
+static inline struct file *io_file_from_index(struct io_ring_ctx *ctx,
+					      int index)
+{
+	struct fixed_file_table *table;
+
+	table = &ctx->file_table[index >> IORING_FILE_TABLE_SHIFT];
+	return table->files[index & IORING_FILE_TABLE_MASK];
+}
+
 static int io_req_set_file(struct io_ring_ctx *ctx, const struct sqe_submit *s,
 			   struct io_submit_state *state, struct io_kiocb *req)
 {
@@ -2254,12 +2333,13 @@ static int io_req_set_file(struct io_ring_ctx *ctx, const struct sqe_submit *s,
 		return 0;
 
 	if (flags & IOSQE_FIXED_FILE) {
-		if (unlikely(!ctx->user_files ||
+		if (unlikely(!ctx->file_table ||
 		    (unsigned) fd >= ctx->nr_user_files))
 			return -EBADF;
-		if (!ctx->user_files[fd])
+		fd = array_index_nospec(fd, ctx->nr_user_files);
+		req->file = io_file_from_index(ctx, fd);
+		if (!req->file)
 			return -EBADF;
-		req->file = ctx->user_files[fd];
 		req->flags |= REQ_F_FIXED_FILE;
 	} else {
 		if (s->needs_fixed_file)
@@ -2271,6 +2351,30 @@ static int io_req_set_file(struct io_ring_ctx *ctx, const struct sqe_submit *s,
 	}
 
 	return 0;
+}
+
+static int io_grab_files(struct io_ring_ctx *ctx, struct io_kiocb *req)
+{
+	int ret = -EBADF;
+
+	rcu_read_lock();
+	spin_lock_irq(&ctx->inflight_lock);
+	/*
+	 * We use the f_ops->flush() handler to ensure that we can flush
+	 * out work accessing these files if the fd is closed. Check if
+	 * the fd has changed since we started down this path, and disallow
+	 * this operation if it has.
+	 */
+	if (fcheck(req->submit.ring_fd) == req->submit.ring_file) {
+		list_add(&req->inflight_entry, &ctx->inflight_list);
+		req->flags |= REQ_F_INFLIGHT;
+		req->work.files = current->files;
+		ret = 0;
+	}
+	spin_unlock_irq(&ctx->inflight_lock);
+	rcu_read_unlock();
+
+	return ret;
 }
 
 static int __io_queue_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
@@ -2292,17 +2396,25 @@ static int __io_queue_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		if (sqe_copy) {
 			s->sqe = sqe_copy;
 			memcpy(&req->submit, s, sizeof(*s));
-			io_queue_async_work(ctx, req);
+			if (req->work.flags & IO_WQ_WORK_NEEDS_FILES) {
+				ret = io_grab_files(ctx, req);
+				if (ret) {
+					kfree(sqe_copy);
+					goto err;
+				}
+			}
 
 			/*
 			 * Queued up for async execution, worker will release
 			 * submit reference when the iocb is actually submitted.
 			 */
+			io_queue_async_work(ctx, req);
 			return 0;
 		}
 	}
 
 	/* drop submission reference */
+err:
 	io_put_req(req, NULL);
 
 	/* and drop final reference, if we failed */
@@ -2505,6 +2617,7 @@ static bool io_get_sqring(struct io_ring_ctx *ctx, struct sqe_submit *s)
 
 	head = READ_ONCE(sq_array[head & ctx->sq_mask]);
 	if (head < ctx->sq_entries) {
+		s->ring_file = NULL;
 		s->sqe = &ctx->sq_sqes[head];
 		s->sequence = ctx->cached_sq_head;
 		ctx->cached_sq_head++;
@@ -2704,7 +2817,8 @@ static int io_sq_thread(void *data)
 	return 0;
 }
 
-static int io_ring_submit(struct io_ring_ctx *ctx, unsigned int to_submit)
+static int io_ring_submit(struct io_ring_ctx *ctx, unsigned int to_submit,
+			  struct file *ring_file, int ring_fd)
 {
 	struct io_submit_state state, *statep = NULL;
 	struct io_kiocb *link = NULL;
@@ -2746,9 +2860,11 @@ static int io_ring_submit(struct io_ring_ctx *ctx, unsigned int to_submit)
 		}
 
 out:
+		s.ring_file = ring_file;
 		s.has_user = true;
 		s.in_async = false;
 		s.needs_fixed_file = false;
+		s.ring_fd = ring_fd;
 		submit++;
 		trace_io_uring_submit_sqe(ctx, true, false);
 		io_submit_sqe(ctx, &s, statep, &link);
@@ -2867,20 +2983,29 @@ static void __io_sqe_files_unregister(struct io_ring_ctx *ctx)
 #else
 	int i;
 
-	for (i = 0; i < ctx->nr_user_files; i++)
-		if (ctx->user_files[i])
-			fput(ctx->user_files[i]);
+	for (i = 0; i < ctx->nr_user_files; i++) {
+		struct file *file;
+
+		file = io_file_from_index(ctx, i);
+		if (file)
+			fput(file);
+	}
 #endif
 }
 
 static int io_sqe_files_unregister(struct io_ring_ctx *ctx)
 {
-	if (!ctx->user_files)
+	unsigned nr_tables, i;
+
+	if (!ctx->file_table)
 		return -ENXIO;
 
 	__io_sqe_files_unregister(ctx);
-	kfree(ctx->user_files);
-	ctx->user_files = NULL;
+	nr_tables = DIV_ROUND_UP(ctx->nr_user_files, IORING_MAX_FILES_TABLE);
+	for (i = 0; i < nr_tables; i++)
+		kfree(ctx->file_table[i].files);
+	kfree(ctx->file_table);
+	ctx->file_table = NULL;
 	ctx->nr_user_files = 0;
 	return 0;
 }
@@ -2955,9 +3080,11 @@ static int __io_sqe_files_scm(struct io_ring_ctx *ctx, int nr, int offset)
 	nr_files = 0;
 	fpl->user = get_uid(ctx->user);
 	for (i = 0; i < nr; i++) {
-		if (!ctx->user_files[i + offset])
+		struct file *file = io_file_from_index(ctx, i + offset);
+
+		if (!file)
 			continue;
-		fpl->fp[nr_files] = get_file(ctx->user_files[i + offset]);
+		fpl->fp[nr_files] = get_file(file);
 		unix_inflight(fpl->user, fpl->fp[nr_files]);
 		nr_files++;
 	}
@@ -3006,8 +3133,10 @@ static int io_sqe_files_scm(struct io_ring_ctx *ctx)
 		return 0;
 
 	while (total < ctx->nr_user_files) {
-		if (ctx->user_files[total])
-			fput(ctx->user_files[total]);
+		struct file *file = io_file_from_index(ctx, total);
+
+		if (file)
+			fput(file);
 		total++;
 	}
 
@@ -3020,25 +3149,63 @@ static int io_sqe_files_scm(struct io_ring_ctx *ctx)
 }
 #endif
 
+static int io_sqe_alloc_file_tables(struct io_ring_ctx *ctx, unsigned nr_tables,
+				    unsigned nr_files)
+{
+	int i;
+
+	for (i = 0; i < nr_tables; i++) {
+		struct fixed_file_table *table = &ctx->file_table[i];
+		unsigned this_files;
+
+		this_files = min(nr_files, IORING_MAX_FILES_TABLE);
+		table->files = kcalloc(this_files, sizeof(struct file *),
+					GFP_KERNEL);
+		if (!table->files)
+			break;
+		nr_files -= this_files;
+	}
+
+	if (i == nr_tables)
+		return 0;
+
+	for (i = 0; i < nr_tables; i++) {
+		struct fixed_file_table *table = &ctx->file_table[i];
+		kfree(table->files);
+	}
+	return 1;
+}
+
 static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 				 unsigned nr_args)
 {
 	__s32 __user *fds = (__s32 __user *) arg;
+	unsigned nr_tables;
 	int fd, ret = 0;
 	unsigned i;
 
-	if (ctx->user_files)
+	if (ctx->file_table)
 		return -EBUSY;
 	if (!nr_args)
 		return -EINVAL;
 	if (nr_args > IORING_MAX_FIXED_FILES)
 		return -EMFILE;
 
-	ctx->user_files = kcalloc(nr_args, sizeof(struct file *), GFP_KERNEL);
-	if (!ctx->user_files)
+	nr_tables = DIV_ROUND_UP(nr_args, IORING_MAX_FILES_TABLE);
+	ctx->file_table = kcalloc(nr_tables, sizeof(struct fixed_file_table),
+					GFP_KERNEL);
+	if (!ctx->file_table)
 		return -ENOMEM;
 
+	if (io_sqe_alloc_file_tables(ctx, nr_tables, nr_args)) {
+		kfree(ctx->file_table);
+		return -ENOMEM;
+	}
+
 	for (i = 0; i < nr_args; i++, ctx->nr_user_files++) {
+		struct fixed_file_table *table;
+		unsigned index;
+
 		ret = -EFAULT;
 		if (copy_from_user(&fd, &fds[i], sizeof(fd)))
 			break;
@@ -3048,10 +3215,12 @@ static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 			continue;
 		}
 
-		ctx->user_files[i] = fget(fd);
+		table = &ctx->file_table[i >> IORING_FILE_TABLE_SHIFT];
+		index = i & IORING_FILE_TABLE_MASK;
+		table->files[index] = fget(fd);
 
 		ret = -EBADF;
-		if (!ctx->user_files[i])
+		if (!table->files[index])
 			break;
 		/*
 		 * Don't allow io_uring instances to be registered. If UNIX
@@ -3060,20 +3229,26 @@ static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 		 * handle it just fine, but there's still no point in allowing
 		 * a ring fd as it doesn't support regular read/write anyway.
 		 */
-		if (ctx->user_files[i]->f_op == &io_uring_fops) {
-			fput(ctx->user_files[i]);
+		if (table->files[index]->f_op == &io_uring_fops) {
+			fput(table->files[index]);
 			break;
 		}
 		ret = 0;
 	}
 
 	if (ret) {
-		for (i = 0; i < ctx->nr_user_files; i++)
-			if (ctx->user_files[i])
-				fput(ctx->user_files[i]);
+		for (i = 0; i < ctx->nr_user_files; i++) {
+			struct file *file;
 
-		kfree(ctx->user_files);
-		ctx->user_files = NULL;
+			file = io_file_from_index(ctx, i);
+			if (file)
+				fput(file);
+		}
+		for (i = 0; i < nr_tables; i++)
+			kfree(ctx->file_table[i].files);
+
+		kfree(ctx->file_table);
+		ctx->file_table = NULL;
 		ctx->nr_user_files = 0;
 		return ret;
 	}
@@ -3088,7 +3263,7 @@ static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 static void io_sqe_file_unregister(struct io_ring_ctx *ctx, int index)
 {
 #if defined(CONFIG_UNIX)
-	struct file *file = ctx->user_files[index];
+	struct file *file = io_file_from_index(ctx, index);
 	struct sock *sock = ctx->ring_sock->sk;
 	struct sk_buff_head list, *head = &sock->sk_receive_queue;
 	struct sk_buff *skb;
@@ -3144,7 +3319,7 @@ static void io_sqe_file_unregister(struct io_ring_ctx *ctx, int index)
 		spin_unlock_irq(&head->lock);
 	}
 #else
-	fput(ctx->user_files[index]);
+	fput(io_file_from_index(ctx, index));
 #endif
 }
 
@@ -3199,7 +3374,7 @@ static int io_sqe_files_update(struct io_ring_ctx *ctx, void __user *arg,
 	int fd, i, err;
 	__u32 done;
 
-	if (!ctx->user_files)
+	if (!ctx->file_table)
 		return -ENXIO;
 	if (!nr_args)
 		return -EINVAL;
@@ -3213,15 +3388,20 @@ static int io_sqe_files_update(struct io_ring_ctx *ctx, void __user *arg,
 	done = 0;
 	fds = (__s32 __user *) up.fds;
 	while (nr_args) {
+		struct fixed_file_table *table;
+		unsigned index;
+
 		err = 0;
 		if (copy_from_user(&fd, &fds[done], sizeof(fd))) {
 			err = -EFAULT;
 			break;
 		}
 		i = array_index_nospec(up.offset, ctx->nr_user_files);
-		if (ctx->user_files[i]) {
+		table = &ctx->file_table[i >> IORING_FILE_TABLE_SHIFT];
+		index = i & IORING_FILE_TABLE_MASK;
+		if (table->files[index]) {
 			io_sqe_file_unregister(ctx, i);
-			ctx->user_files[i] = NULL;
+			table->files[index] = NULL;
 		}
 		if (fd != -1) {
 			struct file *file;
@@ -3244,7 +3424,7 @@ static int io_sqe_files_update(struct io_ring_ctx *ctx, void __user *arg,
 				err = -EBADF;
 				break;
 			}
-			ctx->user_files[i] = file;
+			table->files[index] = file;
 			err = io_sqe_file_register(ctx, file, i);
 			if (err)
 				break;
@@ -3710,6 +3890,53 @@ static int io_uring_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+static void io_uring_cancel_files(struct io_ring_ctx *ctx,
+				  struct files_struct *files)
+{
+	struct io_kiocb *req;
+	DEFINE_WAIT(wait);
+
+	while (!list_empty_careful(&ctx->inflight_list)) {
+		enum io_wq_cancel ret = IO_WQ_CANCEL_NOTFOUND;
+
+		spin_lock_irq(&ctx->inflight_lock);
+		list_for_each_entry(req, &ctx->inflight_list, inflight_entry) {
+			if (req->work.files == files) {
+				ret = io_wq_cancel_work(ctx->io_wq, &req->work);
+				break;
+			}
+		}
+		if (ret == IO_WQ_CANCEL_RUNNING)
+			prepare_to_wait(&ctx->inflight_wait, &wait,
+					TASK_UNINTERRUPTIBLE);
+
+		spin_unlock_irq(&ctx->inflight_lock);
+
+		/*
+		 * We need to keep going until we get NOTFOUND. We only cancel
+		 * one work at the time.
+		 *
+		 * If we get CANCEL_RUNNING, then wait for a work to complete
+		 * before continuing.
+		 */
+		if (ret == IO_WQ_CANCEL_OK)
+			continue;
+		else if (ret != IO_WQ_CANCEL_RUNNING)
+			break;
+		schedule();
+	}
+}
+
+static int io_uring_flush(struct file *file, void *data)
+{
+	struct io_ring_ctx *ctx = file->private_data;
+
+	io_uring_cancel_files(ctx, data);
+	if (fatal_signal_pending(current) || (current->flags & PF_EXITING))
+		io_wq_cancel_all(ctx->io_wq);
+	return 0;
+}
+
 static int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	loff_t offset = (loff_t) vma->vm_pgoff << PAGE_SHIFT;
@@ -3778,7 +4005,7 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 		to_submit = min(to_submit, ctx->sq_entries);
 
 		mutex_lock(&ctx->uring_lock);
-		submitted = io_ring_submit(ctx, to_submit);
+		submitted = io_ring_submit(ctx, to_submit, f.file, fd);
 		mutex_unlock(&ctx->uring_lock);
 	}
 	if (flags & IORING_ENTER_GETEVENTS) {
@@ -3801,6 +4028,7 @@ out_fput:
 
 static const struct file_operations io_uring_fops = {
 	.release	= io_uring_release,
+	.flush		= io_uring_flush,
 	.mmap		= io_uring_mmap,
 	.poll		= io_uring_poll,
 	.fasync		= io_uring_fasync,
