@@ -20,6 +20,7 @@
 #include <linux/cpuidle.h>
 #include <linux/cpu.h>
 #include <acpi/processor.h>
+#include <linux/kvm_para.h>
 
 /*
  * Include the apic definitions for x86 to have the APIC timer related defines
