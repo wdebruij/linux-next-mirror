@@ -1473,6 +1473,7 @@ struct ib_ucontext {
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
 	struct rdma_restrack_entry res;
+	struct xarray mmap_xa;
 };
 
 struct ib_uobject {
@@ -2258,6 +2259,20 @@ struct iw_cm_conn_param;
 
 #define DECLARE_RDMA_OBJ_SIZE(ib_struct) size_t size_##ib_struct
 
+struct rdma_user_mmap_entry {
+	struct kref ref;
+	struct ib_ucontext *ucontext;
+	u32 npages;
+	u32 mmap_page;
+	bool invalid;
+};
+
+static inline u64
+rdma_user_mmap_get_key(const struct rdma_user_mmap_entry *entry)
+{
+	return (u64)entry->mmap_page << PAGE_SHIFT;
+}
+
 /**
  * struct ib_device_ops - InfiniBand device operations
  * This structure defines all the InfiniBand device operations, providers will
@@ -2370,6 +2385,13 @@ struct ib_device_ops {
 			      struct ib_udata *udata);
 	void (*dealloc_ucontext)(struct ib_ucontext *context);
 	int (*mmap)(struct ib_ucontext *context, struct vm_area_struct *vma);
+	/**
+	 * This will be called once refcount of an entry in mmap_xa reaches
+	 * zero. The type of the memory that was mapped may differ between
+	 * entries and is opaque to the rdma_user_mmap interface.
+	 * Therefore needs to be implemented by the driver in mmap_free.
+	 */
+	void (*mmap_free)(struct rdma_user_mmap_entry *entry);
 	void (*disassociate_ucontext)(struct ib_ucontext *ibcontext);
 	int (*alloc_pd)(struct ib_pd *pd, struct ib_udata *udata);
 	void (*dealloc_pd)(struct ib_pd *pd, struct ib_udata *udata);
@@ -2815,6 +2837,18 @@ static inline int rdma_user_mmap_io(struct ib_ucontext *ucontext,
 	return -EINVAL;
 }
 #endif
+int rdma_user_mmap_entry_insert(struct ib_ucontext *ucontext,
+				struct rdma_user_mmap_entry *entry,
+				size_t length);
+struct rdma_user_mmap_entry *
+rdma_user_mmap_entry_get(struct ib_ucontext *ucontext, u64 key,
+			 struct vm_area_struct *vma);
+
+void rdma_user_mmap_entry_put(struct ib_ucontext *ucontext,
+			      struct rdma_user_mmap_entry *entry);
+
+void rdma_user_mmap_entry_remove(struct ib_ucontext *ucontext,
+				 struct rdma_user_mmap_entry *entry);
 
 static inline int ib_copy_from_udata(void *dest, struct ib_udata *udata, size_t len)
 {
