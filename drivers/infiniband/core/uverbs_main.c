@@ -819,7 +819,7 @@ static void rdma_umap_open(struct vm_area_struct *vma)
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		goto out_unlock;
-	rdma_umap_priv_init(priv, vma);
+	rdma_umap_priv_init(priv, vma, opriv->entry);
 
 	up_read(&ufile->hw_destroy_rwsem);
 	return;
@@ -843,6 +843,11 @@ static void rdma_umap_close(struct vm_area_struct *vma)
 
 	if (!priv)
 		return;
+
+	if (priv->entry) {
+		rdma_user_mmap_entry_put(ufile->ucontext, priv->entry);
+		priv->entry = NULL;
+	}
 
 	/*
 	 * The vma holds a reference on the struct file that created it, which
@@ -946,6 +951,13 @@ void uverbs_user_mmap_disassociate(struct ib_uverbs_file *ufile)
 
 			if (vma->vm_mm != mm)
 				continue;
+
+			if (priv->entry) {
+				rdma_user_mmap_entry_put(ufile->ucontext,
+							 priv->entry);
+				priv->entry = NULL;
+			}
+
 			list_del_init(&priv->list);
 
 			zap_vma_ptes(vma, vma->vm_start,
