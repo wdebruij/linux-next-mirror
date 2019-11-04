@@ -10,6 +10,7 @@
 #include <linux/falloc.h>
 #include <linux/scatterlist.h>
 #include <linux/uuid.h>
+#include <linux/sort.h>
 #include <crypto/aead.h>
 #include "cifsglob.h"
 #include "smb2pdu.h"
@@ -315,7 +316,7 @@ smb2_negotiate(const unsigned int xid, struct cifs_ses *ses)
 {
 	int rc;
 
-	ses->server->CurrentMid = 0;
+	cifs_ses_server(ses)->CurrentMid = 0;
 	rc = SMB2_negotiate(xid, ses);
 	/* BB we probably don't need to retry with modern servers */
 	if (rc == -EAGAIN)
@@ -558,6 +559,13 @@ out:
 	return rc;
 }
 
+static int compare_iface(const void *ia, const void *ib)
+{
+	const struct cifs_server_iface *a = (struct cifs_server_iface *)ia;
+	const struct cifs_server_iface *b = (struct cifs_server_iface *)ib;
+
+	return a->speed == b->speed ? 0 : (a->speed > b->speed ? -1 : 1);
+}
 
 static int
 SMB3_request_interfaces(const unsigned int xid, struct cifs_tcon *tcon)
@@ -586,6 +594,9 @@ SMB3_request_interfaces(const unsigned int xid, struct cifs_tcon *tcon)
 				     &iface_list, &iface_count);
 	if (rc)
 		goto out;
+
+	/* sort interfaces from fastest to slowest */
+	sort(iface_list, iface_count, sizeof(*iface_list), compare_iface, NULL);
 
 	spin_lock(&ses->iface_lock);
 	kfree(ses->iface_list);
@@ -3598,14 +3609,16 @@ smb2_get_enc_key(struct TCP_Server_Info *server, __u64 ses_id, int enc, u8 *key)
 	u8 *ses_enc_key;
 
 	spin_lock(&cifs_tcp_ses_lock);
-	list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
-		if (ses->Suid != ses_id)
-			continue;
-		ses_enc_key = enc ? ses->smb3encryptionkey :
-							ses->smb3decryptionkey;
-		memcpy(key, ses_enc_key, SMB3_SIGN_KEY_SIZE);
-		spin_unlock(&cifs_tcp_ses_lock);
-		return 0;
+	list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			if (ses->Suid == ses_id) {
+				ses_enc_key = enc ? ses->smb3encryptionkey :
+					ses->smb3decryptionkey;
+				memcpy(key, ses_enc_key, SMB3_SIGN_KEY_SIZE);
+				spin_unlock(&cifs_tcp_ses_lock);
+				return 0;
+			}
+		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 
