@@ -10523,6 +10523,8 @@ M:	Andrew Morton <akpm@linux-foundation.org>
 L:	linux-mm@kvack.org
 W:	http://www.linux-mm.org
 T:	git git://github.com/hnaz/linux-mm.git
+T:	quilt https://ozlabs.org/~akpm/mmotm/
+T:	quilt https://ozlabs.org/~akpm/mmots/
 S:	Maintained
 F:	include/linux/mm.h
 F:	include/linux/gfp.h
