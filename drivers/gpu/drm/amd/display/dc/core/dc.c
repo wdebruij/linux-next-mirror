@@ -194,7 +194,7 @@ static bool create_links(
 				}
 			}
 
-			if (!should_destory_link) {
+			if (dc->config.force_enum_edp || !should_destory_link) {
 				dc->links[dc->link_count] = link;
 				link->dc = dc;
 				++dc->link_count;
@@ -1245,14 +1245,8 @@ static enum dc_status dc_commit_state_no_check(struct dc *dc, struct dc_state *c
 
 	dc_enable_stereo(dc, context, dc_streams, context->stream_count);
 
-	if (!dc->optimize_seamless_boot)
-		/* pplib is notified if disp_num changed */
-		dc->hwss.optimize_bandwidth(dc, context);
-
 	for (i = 0; i < context->stream_count; i++)
 		context->streams[i]->mode_changed = false;
-
-	memset(&context->commit_hints, 0, sizeof(context->commit_hints));
 
 	dc_release_state(dc->current_state);
 
