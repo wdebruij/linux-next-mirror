@@ -206,10 +206,10 @@ Generic fbdev defio support
 ---------------------------
 
 The defio support code in the fbdev core has some very specific requirements,
-which means drivers need to have a special framebuffer for fbdev. Which prevents
-us from using the generic fbdev emulation code everywhere. The main issue is
-that it uses some fields in struct page itself, which breaks shmem gem objects
-(and other things).
+which means drivers need to have a special framebuffer for fbdev. The main
+issue is that it uses some fields in struct page itself, which breaks shmem
+gem objects (and other things). To support defio, affected drivers require
+the use of a shadow buffer, which may add CPU and memory overhead.
 
 Possible solution would be to write our own defio mmap code in the drm fbdev
 emulation. It would need to fully wrap the existing mmap ops, forwarding
@@ -348,6 +348,23 @@ connector register/unregister fixes
   registered when calling drm_dp_aux_register. Fix this by instead calling
   drm_dp_aux_init, and moving the actual registering into a late_register
   callback as recommended in the kerneldoc.
+
+Level: Intermediate
+
+Remove load/unload callbacks from all non-DRIVER_LEGACY drivers
+---------------------------------------------------------------
+
+The load/unload callbacks in struct &drm_driver are very much midlayers, plus
+for historical reasons they get the ordering wrong (and we can't fix that)
+between setting up the &drm_driver structure and calling drm_dev_register().
+
+- Rework drivers to no longer use the load/unload callbacks, directly coding the
+  load/unload sequence into the driver's probe function.
+
+- Once all non-DRIVER_LEGACY drivers are converted, disallow the load/unload
+  callbacks for all modern drivers.
+
+Contact: Daniel Vetter
 
 Level: Intermediate
 
