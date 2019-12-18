@@ -2148,7 +2148,7 @@ static int __apply_to_page_range(struct mm_struct *mm, unsigned long addr,
 	pgd_t *pgd;
 	unsigned long next;
 	unsigned long end = addr + size;
-	int err;
+	int err = 0;
 
 	if (WARN_ON(addr >= end))
 		return -EINVAL;
