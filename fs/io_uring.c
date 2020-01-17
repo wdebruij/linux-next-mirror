@@ -2749,7 +2749,7 @@ static void io_close_finish(struct io_wq_work **workptr)
 	io_put_req(req);
 	io_put_req_find_next(req, &nxt);
 	if (nxt)
-		*workptr = &nxt->work;
+		io_wq_assign_next(workptr, nxt);
 }
 
 static int io_close(struct io_kiocb *req, struct io_kiocb **nxt,
@@ -2827,7 +2827,7 @@ static void io_sync_file_range_finish(struct io_wq_work **workptr)
 	io_cqring_add_event(req, ret);
 	io_put_req_find_next(req, &nxt);
 	if (nxt)
-		*workptr = &nxt->work;
+		io_wq_assign_next(workptr, nxt);
 }
 
 static int io_sync_file_range(struct io_kiocb *req, struct io_kiocb **nxt,
