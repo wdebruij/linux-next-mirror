@@ -5223,7 +5223,7 @@ static int io_files_update(struct io_kiocb *req, bool force_nonblock,
 }
 
 static int io_req_defer_prep(struct io_kiocb *req,
-			     const struct io_uring_sqe *sqe, bool for_async)
+			     const struct io_uring_sqe *sqe)
 {
 	ssize_t ret = 0;
 
@@ -5236,9 +5236,6 @@ static int io_req_defer_prep(struct io_kiocb *req,
 		if (unlikely(ret))
 			return ret;
 	}
-
-	if (for_async || (req->flags & REQ_F_WORK_INITIALIZED))
-		io_req_work_grab_env(req);
 
 	switch (req->opcode) {
 	case IORING_OP_NOP:
@@ -5352,9 +5349,10 @@ static int io_req_defer(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	if (!req->io) {
 		if (io_alloc_async_ctx(req))
 			return -EAGAIN;
-		ret = io_req_defer_prep(req, sqe, true);
+		ret = io_req_defer_prep(req, sqe);
 		if (ret < 0)
 			return ret;
+		io_req_work_grab_env(req);
 	}
 
 	spin_lock_irq(&ctx->completion_lock);
@@ -5966,9 +5964,10 @@ fail_req:
 			ret = -EAGAIN;
 			if (io_alloc_async_ctx(req))
 				goto fail_req;
-			ret = io_req_defer_prep(req, sqe, true);
+			ret = io_req_defer_prep(req, sqe);
 			if (unlikely(ret < 0))
 				goto fail_req;
+			io_req_work_grab_env(req);
 		}
 
 		/*
@@ -6022,7 +6021,7 @@ static int io_submit_sqe(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 		if (io_alloc_async_ctx(req))
 			return -EAGAIN;
 
-		ret = io_req_defer_prep(req, sqe, false);
+		ret = io_req_defer_prep(req, sqe);
 		if (ret) {
 			/* fail even hard links since we don't submit */
 			head->flags |= REQ_F_FAIL_LINK;
@@ -6049,7 +6048,7 @@ static int io_submit_sqe(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 			if (io_alloc_async_ctx(req))
 				return -EAGAIN;
 
-			ret = io_req_defer_prep(req, sqe, false);
+			ret = io_req_defer_prep(req, sqe);
 			if (ret)
 				req->flags |= REQ_F_FAIL_LINK;
 			*link = req;
