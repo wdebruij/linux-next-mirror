@@ -531,9 +531,7 @@ enum {
 	REQ_F_CUR_POS_BIT,
 	REQ_F_NOWAIT_BIT,
 	REQ_F_LINK_TIMEOUT_BIT,
-	REQ_F_TIMEOUT_BIT,
 	REQ_F_ISREG_BIT,
-	REQ_F_TIMEOUT_NOSEQ_BIT,
 	REQ_F_COMP_LOCKED_BIT,
 	REQ_F_NEED_CLEANUP_BIT,
 	REQ_F_OVERFLOW_BIT,
@@ -574,12 +572,8 @@ enum {
 	REQ_F_NOWAIT		= BIT(REQ_F_NOWAIT_BIT),
 	/* has linked timeout */
 	REQ_F_LINK_TIMEOUT	= BIT(REQ_F_LINK_TIMEOUT_BIT),
-	/* timeout request */
-	REQ_F_TIMEOUT		= BIT(REQ_F_TIMEOUT_BIT),
 	/* regular file */
 	REQ_F_ISREG		= BIT(REQ_F_ISREG_BIT),
-	/* no timeout sequence */
-	REQ_F_TIMEOUT_NOSEQ	= BIT(REQ_F_TIMEOUT_NOSEQ_BIT),
 	/* completion under lock */
 	REQ_F_COMP_LOCKED	= BIT(REQ_F_COMP_LOCKED_BIT),
 	/* needs cleanup */
@@ -1013,6 +1007,11 @@ static void io_ring_ctx_ref_free(struct percpu_ref *ref)
 	complete(&ctx->ref_comp);
 }
 
+static inline bool io_is_timeout_noseq(struct io_kiocb *req)
+{
+	return !req->timeout.off;
+}
+
 static struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 {
 	struct io_ring_ctx *ctx;
@@ -1225,7 +1224,7 @@ static void io_flush_timeouts(struct io_ring_ctx *ctx)
 		struct io_kiocb *req = list_first_entry(&ctx->timeout_list,
 							struct io_kiocb, list);
 
-		if (req->flags & REQ_F_TIMEOUT_NOSEQ)
+		if (io_is_timeout_noseq(req))
 			break;
 		if (req->timeout.target_seq != ctx->cached_cq_tail
 					- atomic_read(&ctx->cq_timeouts))
@@ -1527,12 +1526,15 @@ static void io_dismantle_req(struct io_kiocb *req)
 
 static void __io_free_req(struct io_kiocb *req)
 {
+	struct io_ring_ctx *ctx;
+
 	io_dismantle_req(req);
-	percpu_ref_put(&req->ctx->refs);
+	ctx = req->ctx;
 	if (likely(!io_is_fallback_req(req)))
 		kmem_cache_free(req_cachep, req);
 	else
-		clear_bit_unlock(0, (unsigned long *) &req->ctx->fallback_req);
+		clear_bit_unlock(0, (unsigned long *) &ctx->fallback_req);
+	percpu_ref_put(&ctx->refs);
 }
 
 static bool io_link_cancel_timeout(struct io_kiocb *req)
@@ -1552,37 +1554,49 @@ static bool io_link_cancel_timeout(struct io_kiocb *req)
 	return false;
 }
 
-static void io_req_link_next(struct io_kiocb *req, struct io_kiocb **nxtptr)
+static void io_kill_linked_timeout(struct io_kiocb *req)
 {
 	struct io_ring_ctx *ctx = req->ctx;
+	struct io_kiocb *link;
 	bool wake_ev = false;
+	unsigned long flags = 0; /* false positive warning */
+
+	if (!(req->flags & REQ_F_COMP_LOCKED))
+		spin_lock_irqsave(&ctx->completion_lock, flags);
+
+	if (list_empty(&req->link_list))
+		goto out;
+	link = list_first_entry(&req->link_list, struct io_kiocb, link_list);
+	if (link->opcode != IORING_OP_LINK_TIMEOUT)
+		goto out;
+
+	list_del_init(&link->link_list);
+	wake_ev = io_link_cancel_timeout(link);
+	req->flags &= ~REQ_F_LINK_TIMEOUT;
+out:
+	if (!(req->flags & REQ_F_COMP_LOCKED))
+		spin_unlock_irqrestore(&ctx->completion_lock, flags);
+	if (wake_ev)
+		io_cqring_ev_posted(ctx);
+}
+
+static struct io_kiocb *io_req_link_next(struct io_kiocb *req)
+{
+	struct io_kiocb *nxt;
 
 	/*
 	 * The list should never be empty when we are called here. But could
 	 * potentially happen if the chain is messed up, check to be on the
 	 * safe side.
 	 */
-	while (!list_empty(&req->link_list)) {
-		struct io_kiocb *nxt = list_first_entry(&req->link_list,
-						struct io_kiocb, link_list);
+	if (unlikely(list_empty(&req->link_list)))
+		return NULL;
 
-		if (unlikely((req->flags & REQ_F_LINK_TIMEOUT) &&
-			     (nxt->flags & REQ_F_TIMEOUT))) {
-			list_del_init(&nxt->link_list);
-			wake_ev |= io_link_cancel_timeout(nxt);
-			req->flags &= ~REQ_F_LINK_TIMEOUT;
-			continue;
-		}
-
-		list_del_init(&req->link_list);
-		if (!list_empty(&nxt->link_list))
-			nxt->flags |= REQ_F_LINK_HEAD;
-		*nxtptr = nxt;
-		break;
-	}
-
-	if (wake_ev)
-		io_cqring_ev_posted(ctx);
+	nxt = list_first_entry(&req->link_list, struct io_kiocb, link_list);
+	list_del_init(&req->link_list);
+	if (!list_empty(&nxt->link_list))
+		nxt->flags |= REQ_F_LINK_HEAD;
+	return nxt;
 }
 
 /*
@@ -1591,9 +1605,6 @@ static void io_req_link_next(struct io_kiocb *req, struct io_kiocb **nxtptr)
 static void io_fail_links(struct io_kiocb *req)
 {
 	struct io_ring_ctx *ctx = req->ctx;
-	unsigned long flags;
-
-	spin_lock_irqsave(&ctx->completion_lock, flags);
 
 	while (!list_empty(&req->link_list)) {
 		struct io_kiocb *link = list_first_entry(&req->link_list,
@@ -1602,26 +1613,23 @@ static void io_fail_links(struct io_kiocb *req)
 		list_del_init(&link->link_list);
 		trace_io_uring_fail_link(req, link);
 
-		if ((req->flags & REQ_F_LINK_TIMEOUT) &&
-		    link->opcode == IORING_OP_LINK_TIMEOUT) {
-			io_link_cancel_timeout(link);
-		} else {
-			io_cqring_fill_event(link, -ECANCELED);
-			__io_double_put_req(link);
-		}
+		io_cqring_fill_event(link, -ECANCELED);
+		__io_double_put_req(link);
 		req->flags &= ~REQ_F_LINK_TIMEOUT;
 	}
 
 	io_commit_cqring(ctx);
-	spin_unlock_irqrestore(&ctx->completion_lock, flags);
 	io_cqring_ev_posted(ctx);
 }
 
-static void io_req_find_next(struct io_kiocb *req, struct io_kiocb **nxt)
+static struct io_kiocb *io_req_find_next(struct io_kiocb *req)
 {
 	if (likely(!(req->flags & REQ_F_LINK_HEAD)))
-		return;
+		return NULL;
 	req->flags &= ~REQ_F_LINK_HEAD;
+
+	if (req->flags & REQ_F_LINK_TIMEOUT)
+		io_kill_linked_timeout(req);
 
 	/*
 	 * If LINK is set, we have dependent requests in this chain. If we
@@ -1629,24 +1637,10 @@ static void io_req_find_next(struct io_kiocb *req, struct io_kiocb **nxt)
 	 * dependencies to the next request. In case of failure, fail the rest
 	 * of the chain.
 	 */
-	if (req->flags & REQ_F_FAIL_LINK) {
-		io_fail_links(req);
-	} else if ((req->flags & (REQ_F_LINK_TIMEOUT | REQ_F_COMP_LOCKED)) ==
-			REQ_F_LINK_TIMEOUT) {
-		struct io_ring_ctx *ctx = req->ctx;
-		unsigned long flags;
-
-		/*
-		 * If this is a timeout link, we could be racing with the
-		 * timeout timer. Grab the completion lock for this case to
-		 * protect against that.
-		 */
-		spin_lock_irqsave(&ctx->completion_lock, flags);
-		io_req_link_next(req, nxt);
-		spin_unlock_irqrestore(&ctx->completion_lock, flags);
-	} else {
-		io_req_link_next(req, nxt);
-	}
+	if (likely(!(req->flags & REQ_F_FAIL_LINK)))
+		return io_req_link_next(req);
+	io_fail_links(req);
+	return NULL;
 }
 
 static void __io_req_task_cancel(struct io_kiocb *req, int error)
@@ -1709,9 +1703,8 @@ static void io_req_task_queue(struct io_kiocb *req)
 
 static void io_queue_next(struct io_kiocb *req)
 {
-	struct io_kiocb *nxt = NULL;
+	struct io_kiocb *nxt = io_req_find_next(req);
 
-	io_req_find_next(req, &nxt);
 	if (nxt)
 		io_req_task_queue(nxt);
 }
@@ -1761,13 +1754,15 @@ static void io_req_free_batch(struct req_batch *rb, struct io_kiocb *req)
  * Drop reference to request, return next in chain (if there is one) if this
  * was the last reference to this request.
  */
-__attribute__((nonnull))
-static void io_put_req_find_next(struct io_kiocb *req, struct io_kiocb **nxtptr)
+static struct io_kiocb *io_put_req_find_next(struct io_kiocb *req)
 {
+	struct io_kiocb *nxt = NULL;
+
 	if (refcount_dec_and_test(&req->refs)) {
-		io_req_find_next(req, nxtptr);
+		nxt = io_req_find_next(req);
 		__io_free_req(req);
 	}
+	return nxt;
 }
 
 static void io_put_req(struct io_kiocb *req)
@@ -1788,7 +1783,7 @@ static struct io_wq_work *io_steal_work(struct io_kiocb *req)
 	if (refcount_read(&req->refs) != 1)
 		return NULL;
 
-	io_req_find_next(req, &nxt);
+	nxt = io_req_find_next(req);
 	if (!nxt)
 		return NULL;
 
@@ -2168,8 +2163,10 @@ static bool io_rw_reissue(struct io_kiocb *req, long res)
 	tsk = req->task;
 	init_task_work(&req->task_work, io_rw_resubmit);
 	ret = task_work_add(tsk, &req->task_work, true);
-	if (!ret)
+	if (!ret) {
+		wake_up_process(tsk);
 		return true;
+	}
 #endif
 	return false;
 }
@@ -4477,7 +4474,7 @@ static void io_poll_task_handler(struct io_kiocb *req, struct io_kiocb **nxt)
 	hash_del(&req->hash_node);
 	io_poll_complete(req, req->result, 0);
 	req->flags |= REQ_F_COMP_LOCKED;
-	io_put_req_find_next(req, nxt);
+	*nxt = io_put_req_find_next(req);
 	spin_unlock_irq(&ctx->completion_lock);
 
 	io_cqring_ev_posted(ctx);
@@ -5051,7 +5048,6 @@ static int io_timeout_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 
 	data = &req->io->timeout;
 	data->req = req;
-	req->flags |= REQ_F_TIMEOUT;
 
 	if (get_timespec64(&data->ts, u64_to_user_ptr(sqe->addr)))
 		return -EFAULT;
@@ -5079,8 +5075,7 @@ static int io_timeout(struct io_kiocb *req)
 	 * timeout event to be satisfied. If it isn't set, then this is
 	 * a pure timeout request, sequence isn't used.
 	 */
-	if (!off) {
-		req->flags |= REQ_F_TIMEOUT_NOSEQ;
+	if (io_is_timeout_noseq(req)) {
 		entry = ctx->timeout_list.prev;
 		goto add;
 	}
@@ -5095,7 +5090,7 @@ static int io_timeout(struct io_kiocb *req)
 	list_for_each_prev(entry, &ctx->timeout_list) {
 		struct io_kiocb *nxt = list_entry(entry, struct io_kiocb, list);
 
-		if (nxt->flags & REQ_F_TIMEOUT_NOSEQ)
+		if (io_is_timeout_noseq(nxt))
 			continue;
 		/* nxt.seq is behind @tail, otherwise would've been completed */
 		if (off >= nxt->timeout.target_seq - tail)
@@ -5927,9 +5922,8 @@ punt:
 	}
 
 err:
-	nxt = NULL;
 	/* drop submission reference */
-	io_put_req_find_next(req, &nxt);
+	nxt = io_put_req_find_next(req);
 
 	if (linked_timeout) {
 		if (!ret)
