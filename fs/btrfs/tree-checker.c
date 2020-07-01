@@ -361,7 +361,8 @@ static int check_csum_item(struct extent_buffer *leaf, struct btrfs_key *key,
 		u32 prev_item_size;
 
 		prev_item_size = btrfs_item_size_nr(leaf, slot - 1);
-		prev_csum_end = (prev_item_size / csumsize) * sectorsize;
+		prev_csum_end = (prev_item_size / csumsize);
+		prev_csum_end <<= fs_info->sectorsize_bits;
 		prev_csum_end += prev_key->offset;
 		if (prev_csum_end > key->offset) {
 			generic_err(leaf, slot - 1,

@@ -416,16 +416,18 @@ int convert_free_space_to_extents(struct btrfs_trans_handle *trans,
 	btrfs_mark_buffer_dirty(leaf);
 	btrfs_release_path(path);
 
-	nrbits = div_u64(block_group->length, block_group->fs_info->sectorsize);
+	nrbits = block_group->length >> block_group->fs_info->sectorsize_bits;
 	start_bit = find_next_bit_le(bitmap, nrbits, 0);
 
 	while (start_bit < nrbits) {
 		end_bit = find_next_zero_bit_le(bitmap, nrbits, start_bit);
 		ASSERT(start_bit < end_bit);
 
-		key.objectid = start + start_bit * block_group->fs_info->sectorsize;
+		key.objectid = start +
+			       (start_bit << block_group->fs_info->sectorsize_bits);
 		key.type = BTRFS_FREE_SPACE_EXTENT_KEY;
-		key.offset = (end_bit - start_bit) * block_group->fs_info->sectorsize;
+		key.offset = (end_bit - start_bit) <<
+					block_group->fs_info->sectorsize_bits;
 
 		ret = btrfs_insert_empty_item(trans, root, path, &key, 0);
 		if (ret)
@@ -540,8 +542,8 @@ static void free_space_set_bits(struct btrfs_block_group *block_group,
 		end = found_end;
 
 	ptr = btrfs_item_ptr_offset(leaf, path->slots[0]);
-	first = div_u64(*start - found_start, fs_info->sectorsize);
-	last = div_u64(end - found_start, fs_info->sectorsize);
+	first = (*start - found_start) >> fs_info->sectorsize_bits;
+	last = (end - found_start) >> fs_info->sectorsize_bits;
 	if (bit)
 		extent_buffer_bitmap_set(leaf, ptr, first, last - first);
 	else

@@ -119,7 +119,7 @@ static inline u32 max_ordered_sum_bytes(struct btrfs_fs_info *fs_info,
 {
 	u32 ncsums = (PAGE_SIZE - sizeof(struct btrfs_ordered_sum)) / csum_size;
 
-	return ncsums * fs_info->sectorsize;
+	return ncsums << fs_info->sectorsize_bits;
 }
 
 int btrfs_insert_file_extent(struct btrfs_trans_handle *trans,
@@ -369,7 +369,7 @@ blk_status_t btrfs_lookup_bio_sums(struct inode *inode, struct bio *bio,
 		 * a single leaf so it will also fit inside a u32
 		 */
 		diff = disk_bytenr - item_start_offset;
-		diff = diff / fs_info->sectorsize;
+		diff = diff >> fs_info->sectorsize_bits;
 		diff = diff * csum_size;
 		count = min_t(int, nblocks, (item_last_offset - disk_bytenr) >>
 					    inode->i_sb->s_blocksize_bits);
@@ -465,7 +465,8 @@ int btrfs_lookup_csums_range(struct btrfs_root *root, u64 start, u64 end,
 			start = key.offset;
 
 		size = btrfs_item_size_nr(leaf, path->slots[0]);
-		csum_end = key.offset + (size / csum_size) * fs_info->sectorsize;
+		csum_end = key.offset +
+			   ((size / csum_size) >> fs_info->sectorsize_bits);
 		if (csum_end <= start) {
 			path->slots[0]++;
 			continue;
@@ -606,7 +607,7 @@ blk_status_t btrfs_csum_one_bio(struct btrfs_inode *inode, struct bio *bio,
 
 			data = kmap_atomic(bvec.bv_page);
 			crypto_shash_digest(shash, data + bvec.bv_offset
-					    + (i * fs_info->sectorsize),
+					    + (i << fs_info->sectorsize_bits),
 					    fs_info->sectorsize,
 					    sums->sums + index);
 			kunmap_atomic(data);
@@ -1020,7 +1021,7 @@ found:
 
 	index += ins_size;
 	ins_size /= csum_size;
-	total_bytes += ins_size * fs_info->sectorsize;
+	total_bytes += ins_size << fs_info->sectorsize_bits;
 
 	btrfs_mark_buffer_dirty(path->nodes[0]);
 	if (total_bytes < sums->len) {
