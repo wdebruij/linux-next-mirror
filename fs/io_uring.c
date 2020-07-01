@@ -1689,6 +1689,22 @@ static struct io_kiocb *io_req_find_next(struct io_kiocb *req)
 	return __io_req_find_next(req);
 }
 
+static int io_req_task_work_add(struct io_kiocb *req, struct callback_head *cb,
+				int notify)
+{
+	const bool is_sqthread = (req->ctx->flags & IORING_SETUP_SQPOLL) != 0;
+	struct task_struct *tsk = req->task;
+	int ret;
+
+	if (is_sqthread)
+		notify = 0;
+
+	ret = task_work_add(tsk, cb, notify);
+	if (!ret)
+		wake_up_process(tsk);
+	return ret;
+}
+
 static void __io_req_task_cancel(struct io_kiocb *req, int error)
 {
 	struct io_ring_ctx *ctx = req->ctx;
@@ -1714,7 +1730,6 @@ static void __io_req_task_submit(struct io_kiocb *req)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 
-	__set_current_state(TASK_RUNNING);
 	if (!__io_sq_thread_acquire_mm(ctx)) {
 		mutex_lock(&ctx->uring_lock);
 		__io_queue_sqe(req, NULL, NULL);
@@ -1733,18 +1748,19 @@ static void io_req_task_submit(struct callback_head *cb)
 
 static void io_req_task_queue(struct io_kiocb *req)
 {
-	struct task_struct *tsk = req->task;
 	int ret;
 
 	init_task_work(&req->task_work, io_req_task_submit);
 
-	ret = task_work_add(tsk, &req->task_work, true);
+	ret = io_req_task_work_add(req, &req->task_work, TWA_RESUME);
 	if (unlikely(ret)) {
+		struct task_struct *tsk;
+
 		init_task_work(&req->task_work, io_req_task_cancel);
 		tsk = io_wq_get_task(req->ctx->io_wq);
-		task_work_add(tsk, &req->task_work, true);
+		task_work_add(tsk, &req->task_work, 0);
+		wake_up_process(tsk);
 	}
-	wake_up_process(tsk);
 }
 
 static void io_queue_next(struct io_kiocb *req)
@@ -1897,6 +1913,17 @@ static int io_put_kbuf(struct io_kiocb *req)
 	req->rw.addr = 0;
 	kfree(kbuf);
 	return cflags;
+}
+
+static inline bool io_run_task_work(void)
+{
+	if (current->task_works) {
+		__set_current_state(TASK_RUNNING);
+		task_work_run();
+		return true;
+	}
+
+	return false;
 }
 
 static void io_iopoll_queue(struct list_head *again)
@@ -2079,8 +2106,7 @@ static int io_iopoll_check(struct io_ring_ctx *ctx, unsigned *nr_events,
 		 */
 		if (!(++iters & 7)) {
 			mutex_unlock(&ctx->uring_lock);
-			if (current->task_works)
-				task_work_run();
+			io_run_task_work();
 			mutex_lock(&ctx->uring_lock);
 		}
 
@@ -2176,8 +2202,6 @@ static void io_rw_resubmit(struct callback_head *cb)
 	struct io_ring_ctx *ctx = req->ctx;
 	int err;
 
-	__set_current_state(TASK_RUNNING);
-
 	err = io_sq_thread_acquire_mm(ctx, req);
 
 	if (io_resubmit_prep(req, err)) {
@@ -2190,19 +2214,15 @@ static void io_rw_resubmit(struct callback_head *cb)
 static bool io_rw_reissue(struct io_kiocb *req, long res)
 {
 #ifdef CONFIG_BLOCK
-	struct task_struct *tsk;
 	int ret;
 
 	if ((res != -EAGAIN && res != -EOPNOTSUPP) || io_wq_current_is_worker())
 		return false;
 
-	tsk = req->task;
 	init_task_work(&req->task_work, io_rw_resubmit);
-	ret = task_work_add(tsk, &req->task_work, true);
-	if (!ret) {
-		wake_up_process(tsk);
+	ret = io_req_task_work_add(req, &req->task_work, TWA_RESUME);
+	if (!ret)
 		return true;
-	}
 #endif
 	return false;
 }
@@ -2902,7 +2922,6 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 	struct io_kiocb *req = wait->private;
 	struct io_async_rw *rw = &req->io->rw;
 	struct wait_page_key *key = arg;
-	struct task_struct *tsk;
 	int ret;
 
 	wpq = container_of(wait, struct wait_page_queue, wait);
@@ -2916,15 +2935,16 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 	init_task_work(&rw->task_work, io_async_buf_retry);
 	/* submit ref gets dropped, acquire a new one */
 	refcount_inc(&req->refs);
-	tsk = req->task;
-	ret = task_work_add(tsk, &rw->task_work, true);
+	ret = io_req_task_work_add(req, &rw->task_work, TWA_RESUME);
 	if (unlikely(ret)) {
+		struct task_struct *tsk;
+
 		/* queue just for cancelation */
 		init_task_work(&rw->task_work, io_async_buf_cancel);
 		tsk = io_wq_get_task(req->ctx->io_wq);
-		task_work_add(tsk, &rw->task_work, true);
+		task_work_add(tsk, &rw->task_work, 0);
+		wake_up_process(tsk);
 	}
-	wake_up_process(tsk);
 	return 1;
 }
 
@@ -4420,7 +4440,6 @@ struct io_poll_table {
 static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 			   __poll_t mask, task_work_func_t func)
 {
-	struct task_struct *tsk;
 	int ret;
 
 	/* for instances that support it check for an event match first: */
@@ -4431,7 +4450,6 @@ static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 
 	list_del_init(&poll->wait.entry);
 
-	tsk = req->task;
 	req->result = mask;
 	init_task_work(&req->task_work, func);
 	/*
@@ -4440,13 +4458,15 @@ static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 	 * of executing it. We can't safely execute it anyway, as we may not
 	 * have the needed state needed for it anyway.
 	 */
-	ret = task_work_add(tsk, &req->task_work, true);
+	ret = io_req_task_work_add(req, &req->task_work, TWA_SIGNAL);
 	if (unlikely(ret)) {
+		struct task_struct *tsk;
+
 		WRITE_ONCE(poll->canceled, true);
 		tsk = io_wq_get_task(req->ctx->io_wq);
-		task_work_add(tsk, &req->task_work, true);
+		task_work_add(tsk, &req->task_work, 0);
+		wake_up_process(tsk);
 	}
-	wake_up_process(tsk);
 	return 1;
 }
 
@@ -6338,8 +6358,7 @@ static int io_sq_thread(void *data)
 			if (!list_empty(&ctx->poll_list) || need_resched() ||
 			    (!time_after(jiffies, timeout) && ret != -EBUSY &&
 			    !percpu_ref_is_dying(&ctx->refs))) {
-				if (current->task_works)
-					task_work_run();
+				io_run_task_work();
 				cond_resched();
 				continue;
 			}
@@ -6371,8 +6390,7 @@ static int io_sq_thread(void *data)
 					finish_wait(&ctx->sqo_wait, &wait);
 					break;
 				}
-				if (current->task_works) {
-					task_work_run();
+				if (io_run_task_work()) {
 					finish_wait(&ctx->sqo_wait, &wait);
 					continue;
 				}
@@ -6397,8 +6415,7 @@ static int io_sq_thread(void *data)
 		timeout = jiffies + ctx->sq_thread_idle;
 	}
 
-	if (current->task_works)
-		task_work_run();
+	io_run_task_work();
 
 	io_sq_thread_drop_mm(ctx);
 	revert_creds(old_cred);
@@ -6463,9 +6480,8 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 	do {
 		if (io_cqring_events(ctx, false) >= min_events)
 			return 0;
-		if (!current->task_works)
+		if (!io_run_task_work())
 			break;
-		task_work_run();
 	} while (1);
 
 	if (sig) {
@@ -6486,19 +6502,20 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events,
 	do {
 		prepare_to_wait_exclusive(&ctx->wait, &iowq.wq,
 						TASK_INTERRUPTIBLE);
-		if (current->task_works)
-			task_work_run();
+		/* make sure we run task_work before checking for signals */
+		if (io_run_task_work())
+			continue;
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			break;
+		}
 		if (io_should_wake(&iowq, false))
 			break;
 		schedule();
-		if (signal_pending(current)) {
-			ret = -EINTR;
-			break;
-		}
 	} while (1);
 	finish_wait(&ctx->wait, &iowq.wq);
 
-	restore_saved_sigmask_unless(ret == -EINTR);
+	restore_saved_sigmask_unless(ret == -ERESTARTSYS);
 
 	return READ_ONCE(rings->cq.head) == READ_ONCE(rings->cq.tail) ? ret : 0;
 }
@@ -7922,8 +7939,7 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 	int submitted = 0;
 	struct fd f;
 
-	if (current->task_works)
-		task_work_run();
+	io_run_task_work();
 
 	if (flags & ~(IORING_ENTER_GETEVENTS | IORING_ENTER_SQ_WAKEUP))
 		return -EINVAL;
