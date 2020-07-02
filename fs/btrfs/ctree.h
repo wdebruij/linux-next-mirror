@@ -934,6 +934,7 @@ struct btrfs_fs_info {
 	u32 sectorsize;
 	u32 sectorsize_bits;
 	u32 csum_size;
+	u32 csums_per_leaf;
 	u32 stripesize;
 
 	/* Block groups and devices containing active swapfiles. */
@@ -2521,7 +2522,17 @@ int btrfs_get_extent_inline_ref_type(const struct extent_buffer *eb,
 				     enum btrfs_inline_ref_type is_data);
 u64 hash_extent_data_ref(u64 root_objectid, u64 owner, u64 offset);
 
-u64 btrfs_csum_bytes_to_leaves(struct btrfs_fs_info *fs_info, u64 csum_bytes);
+/*
+ * Take the number of bytes to be checksummmed and figure out how many leaves
+ * it would require to store the csums for that many bytes.
+ */
+static inline u64 btrfs_csum_bytes_to_leaves(
+			const struct btrfs_fs_info *fs_info, u64 csum_bytes)
+{
+	const u64 num_csums = csum_bytes >> fs_info->sectorsize_bits;
+
+	return DIV_ROUND_UP_ULL(num_csums, fs_info->csums_per_leaf);
+}
 
 /*
  * Use this if we would be adding new items, as we could split nodes as we cow
