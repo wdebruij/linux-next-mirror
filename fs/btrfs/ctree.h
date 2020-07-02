@@ -933,6 +933,7 @@ struct btrfs_fs_info {
 	u32 nodesize;
 	u32 sectorsize;
 	u32 sectorsize_bits;
+	u32 csum_size;
 	u32 stripesize;
 
 	/* Block groups and devices containing active swapfiles. */
