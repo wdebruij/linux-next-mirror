@@ -1414,35 +1414,22 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 		enum migrate_mode mode, int reason)
 {
 	int retry = 1;
-	int thp_retry = 1;
 	int nr_failed = 0;
 	int nr_succeeded = 0;
-	int nr_thp_succeeded = 0;
-	int nr_thp_failed = 0;
-	int nr_thp_split = 0;
 	int pass = 0;
-	bool is_thp = false;
 	struct page *page;
 	struct page *page2;
 	int swapwrite = current->flags & PF_SWAPWRITE;
-	int rc, thp_nr_pages;
+	int rc;
 
 	if (!swapwrite)
 		current->flags |= PF_SWAPWRITE;
 
-	for (pass = 0; pass < 10 && (retry || thp_retry); pass++) {
+	for(pass = 0; pass < 10 && retry; pass++) {
 		retry = 0;
-		thp_retry = 0;
 
 		list_for_each_entry_safe(page, page2, from, lru) {
 retry:
-			/*
-			 * THP statistics is based on the source huge page.
-			 * Capture required information that might get lost
-			 * during migration.
-			 */
-			is_thp = PageTransHuge(page);
-			thp_nr_pages = hpage_nr_pages(page);
 			cond_resched();
 
 			if (PageHuge(page))
@@ -1473,30 +1460,15 @@ retry:
 					unlock_page(page);
 					if (!rc) {
 						list_safe_reset_next(page, page2, lru);
-						nr_thp_split++;
 						goto retry;
 					}
-				}
-				if (is_thp) {
-					nr_thp_failed++;
-					nr_failed += thp_nr_pages;
-					goto out;
 				}
 				nr_failed++;
 				goto out;
 			case -EAGAIN:
-				if (is_thp) {
-					thp_retry++;
-					break;
-				}
 				retry++;
 				break;
 			case MIGRATEPAGE_SUCCESS:
-				if (is_thp) {
-					nr_thp_succeeded++;
-					nr_succeeded += thp_nr_pages;
-					break;
-				}
 				nr_succeeded++;
 				break;
 			default:
@@ -1506,32 +1478,19 @@ retry:
 				 * removed from migration page list and not
 				 * retried in the next outer loop.
 				 */
-				if (is_thp) {
-					nr_thp_failed++;
-					nr_failed += thp_nr_pages;
-					break;
-				}
 				nr_failed++;
 				break;
 			}
 		}
 	}
-	nr_failed += retry + thp_retry;
-	nr_thp_failed += thp_retry;
+	nr_failed += retry;
 	rc = nr_failed;
 out:
 	if (nr_succeeded)
 		count_vm_events(PGMIGRATE_SUCCESS, nr_succeeded);
 	if (nr_failed)
 		count_vm_events(PGMIGRATE_FAIL, nr_failed);
-	if (nr_thp_succeeded)
-		count_vm_events(THP_MIGRATION_SUCCESS, nr_thp_succeeded);
-	if (nr_thp_failed)
-		count_vm_events(THP_MIGRATION_FAILURE, nr_thp_failed);
-	if (nr_thp_split)
-		count_vm_events(THP_MIGRATION_SPLIT, nr_thp_split);
-	trace_mm_migrate_pages(nr_succeeded, nr_failed, nr_thp_succeeded,
-			       nr_thp_failed, nr_thp_split, mode, reason);
+	trace_mm_migrate_pages(nr_succeeded, nr_failed, mode, reason);
 
 	if (!swapwrite)
 		current->flags &= ~PF_SWAPWRITE;
