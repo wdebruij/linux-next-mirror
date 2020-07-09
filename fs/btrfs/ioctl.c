@@ -566,6 +566,7 @@ static noinline int create_subvol(struct inode *dir,
 	struct inode *inode;
 	int ret;
 	int err;
+	dev_t anon_dev = 0;
 	u64 objectid;
 	u64 new_dirid = BTRFS_FIRST_FREE_OBJECTID;
 	u64 index = 0;
@@ -576,6 +577,10 @@ static noinline int create_subvol(struct inode *dir,
 
 	ret = btrfs_find_free_objectid(fs_info->tree_root, &objectid);
 	if (ret)
+		goto fail_free;
+
+	ret = get_anon_bdev(&anon_dev);
+	if (ret < 0)
 		goto fail_free;
 
 	/*
@@ -660,12 +665,15 @@ static noinline int create_subvol(struct inode *dir,
 		goto fail;
 
 	key.offset = (u64)-1;
-	new_root = btrfs_get_fs_root(fs_info, objectid, true);
+	new_root = btrfs_get_new_fs_root(fs_info, objectid, anon_dev);
 	if (IS_ERR(new_root)) {
+		free_anon_bdev(anon_dev);
 		ret = PTR_ERR(new_root);
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
 	}
+	/* Freeing will be done in btrfs_put_root() of new_root */
+	anon_dev = 0;
 
 	btrfs_record_root_in_trans(trans, new_root);
 
@@ -735,6 +743,8 @@ fail:
 	return ret;
 
 fail_free:
+	if (anon_dev)
+		free_anon_bdev(anon_dev);
 	kfree(root_item);
 	return ret;
 }
@@ -762,6 +772,9 @@ static int create_snapshot(struct btrfs_root *root, struct inode *dir,
 	if (!pending_snapshot)
 		return -ENOMEM;
 
+	ret = get_anon_bdev(&pending_snapshot->anon_dev);
+	if (ret < 0)
+		goto free_pending;
 	pending_snapshot->root_item = kzalloc(sizeof(struct btrfs_root_item),
 			GFP_KERNEL);
 	pending_snapshot->path = btrfs_alloc_path();
@@ -823,10 +836,16 @@ static int create_snapshot(struct btrfs_root *root, struct inode *dir,
 
 	d_instantiate(dentry, inode);
 	ret = 0;
+	pending_snapshot->anon_dev = 0;
 fail:
+	/* Prevent double freeing of anon_dev */
+	if (ret && pending_snapshot->snap)
+		pending_snapshot->snap->anon_dev = 0;
 	btrfs_put_root(pending_snapshot->snap);
 	btrfs_subvolume_release_metadata(fs_info, &pending_snapshot->block_rsv);
 free_pending:
+	if (pending_snapshot->anon_dev)
+		free_anon_bdev(pending_snapshot->anon_dev);
 	kfree(pending_snapshot->root_item);
 	btrfs_free_path(pending_snapshot->path);
 	kfree(pending_snapshot);
@@ -1243,7 +1262,7 @@ static int cluster_pages_for_defrag(struct inode *inode,
 
 	page_cnt = min_t(u64, (u64)num_pages, (u64)file_end - start_index + 1);
 
-	ret = btrfs_delalloc_reserve_space(inode, &data_reserved,
+	ret = btrfs_delalloc_reserve_space(BTRFS_I(inode), &data_reserved,
 			start_index << PAGE_SHIFT,
 			page_cnt << PAGE_SHIFT);
 	if (ret)
@@ -1265,7 +1284,7 @@ again:
 		while (1) {
 			lock_extent_bits(tree, page_start, page_end,
 					 &cached_state);
-			ordered = btrfs_lookup_ordered_extent(inode,
+			ordered = btrfs_lookup_ordered_extent(BTRFS_I(inode),
 							      page_start);
 			unlock_extent_cached(tree, page_start, page_end,
 					     &cached_state);
@@ -1333,7 +1352,7 @@ again:
 		spin_lock(&BTRFS_I(inode)->lock);
 		btrfs_mod_outstanding_extents(BTRFS_I(inode), 1);
 		spin_unlock(&BTRFS_I(inode)->lock);
-		btrfs_delalloc_release_space(inode, data_reserved,
+		btrfs_delalloc_release_space(BTRFS_I(inode), data_reserved,
 				start_index << PAGE_SHIFT,
 				(page_cnt - i_done) << PAGE_SHIFT, true);
 	}
@@ -1361,7 +1380,7 @@ out:
 		unlock_page(pages[i]);
 		put_page(pages[i]);
 	}
-	btrfs_delalloc_release_space(inode, data_reserved,
+	btrfs_delalloc_release_space(BTRFS_I(inode), data_reserved,
 			start_index << PAGE_SHIFT,
 			page_cnt << PAGE_SHIFT, true);
 	btrfs_delalloc_release_extents(BTRFS_I(inode), page_cnt << PAGE_SHIFT);
@@ -4829,7 +4848,7 @@ long btrfs_ioctl(struct file *file, unsigned int
 	case BTRFS_IOC_SYNC: {
 		int ret;
 
-		ret = btrfs_start_delalloc_roots(fs_info, -1);
+		ret = btrfs_start_delalloc_roots(fs_info, U64_MAX);
 		if (ret)
 			return ret;
 		ret = btrfs_sync_fs(inode->i_sb, 1);
