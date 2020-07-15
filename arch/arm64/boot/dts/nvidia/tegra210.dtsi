@@ -386,6 +386,9 @@
 			resets = <&tegra_car 208>;
 			reset-names = "i2c";
 			status = "disabled";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
 		};
 	};
 
