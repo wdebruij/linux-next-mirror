@@ -644,7 +644,6 @@ struct io_kiocb {
 	unsigned int		flags;
 	refcount_t		refs;
 	struct task_struct	*task;
-	unsigned long		fsize;
 	u64			user_data;
 
 	struct list_head	link_list;
@@ -735,6 +734,7 @@ struct io_op_def {
 	unsigned		pollout : 1;
 	/* op supports buffer selection */
 	unsigned		buffer_select : 1;
+	unsigned		needs_fsize : 1;
 };
 
 static const struct io_op_def io_op_defs[] = {
@@ -754,6 +754,7 @@ static const struct io_op_def io_op_defs[] = {
 		.hash_reg_file		= 1,
 		.unbound_nonreg_file	= 1,
 		.pollout		= 1,
+		.needs_fsize		= 1,
 	},
 	[IORING_OP_FSYNC] = {
 		.needs_file		= 1,
@@ -768,6 +769,7 @@ static const struct io_op_def io_op_defs[] = {
 		.hash_reg_file		= 1,
 		.unbound_nonreg_file	= 1,
 		.pollout		= 1,
+		.needs_fsize		= 1,
 	},
 	[IORING_OP_POLL_ADD] = {
 		.needs_file		= 1,
@@ -820,6 +822,7 @@ static const struct io_op_def io_op_defs[] = {
 	},
 	[IORING_OP_FALLOCATE] = {
 		.needs_file		= 1,
+		.needs_fsize		= 1,
 	},
 	[IORING_OP_OPENAT] = {
 		.file_table		= 1,
@@ -851,6 +854,7 @@ static const struct io_op_def io_op_defs[] = {
 		.needs_file		= 1,
 		.unbound_nonreg_file	= 1,
 		.pollout		= 1,
+		.needs_fsize		= 1,
 	},
 	[IORING_OP_FADVISE] = {
 		.needs_file		= 1,
@@ -1114,31 +1118,7 @@ static void __io_commit_cqring(struct io_ring_ctx *ctx)
 	}
 }
 
-static void io_req_work_grab_env(struct io_kiocb *req)
-{
-	const struct io_op_def *def = &io_op_defs[req->opcode];
-
-	io_req_init_async(req);
-
-	if (!req->work.mm && def->needs_mm) {
-		mmgrab(current->mm);
-		req->work.mm = current->mm;
-	}
-	if (!req->work.creds)
-		req->work.creds = get_current_cred();
-	if (!req->work.fs && def->needs_fs) {
-		spin_lock(&current->fs->lock);
-		if (!current->fs->in_exec) {
-			req->work.fs = current->fs;
-			req->work.fs->users++;
-		} else {
-			req->work.flags |= IO_WQ_WORK_CANCEL;
-		}
-		spin_unlock(&current->fs->lock);
-	}
-}
-
-static inline void io_req_work_drop_env(struct io_kiocb *req)
+static void io_req_clean_work(struct io_kiocb *req)
 {
 	if (!(req->flags & REQ_F_WORK_INITIALIZED))
 		return;
@@ -1176,8 +1156,26 @@ static void io_prep_async_work(struct io_kiocb *req)
 		if (def->unbound_nonreg_file)
 			req->work.flags |= IO_WQ_WORK_UNBOUND;
 	}
-
-	io_req_work_grab_env(req);
+	if (!req->work.mm && def->needs_mm) {
+		mmgrab(current->mm);
+		req->work.mm = current->mm;
+	}
+	if (!req->work.creds)
+		req->work.creds = get_current_cred();
+	if (!req->work.fs && def->needs_fs) {
+		spin_lock(&current->fs->lock);
+		if (!current->fs->in_exec) {
+			req->work.fs = current->fs;
+			req->work.fs->users++;
+		} else {
+			req->work.flags |= IO_WQ_WORK_CANCEL;
+		}
+		spin_unlock(&current->fs->lock);
+	}
+	if (def->needs_fsize)
+		req->work.fsize = rlimit(RLIMIT_FSIZE);
+	else
+		req->work.fsize = RLIM_INFINITY;
 }
 
 static void io_prep_async_link(struct io_kiocb *req)
@@ -1546,7 +1544,7 @@ static void io_dismantle_req(struct io_kiocb *req)
 	if (req->file)
 		io_put_file(req, req->file, (req->flags & REQ_F_FIXED_FILE));
 	__io_put_req_task(req);
-	io_req_work_drop_env(req);
+	io_req_clean_work(req);
 
 	if (req->flags & REQ_F_INFLIGHT) {
 		struct io_ring_ctx *ctx = req->ctx;
@@ -3081,8 +3079,6 @@ static int io_write_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 	if (unlikely(!(req->file->f_mode & FMODE_WRITE)))
 		return -EBADF;
 
-	req->fsize = rlimit(RLIMIT_FSIZE);
-
 	/* either don't need iovec imported or already have it */
 	if (!req->io || req->flags & REQ_F_NEED_CLEANUP)
 		return 0;
@@ -3139,16 +3135,10 @@ static int io_write(struct io_kiocb *req, bool force_nonblock,
 		}
 		kiocb->ki_flags |= IOCB_WRITE;
 
-		if (!force_nonblock)
-			current->signal->rlim[RLIMIT_FSIZE].rlim_cur = req->fsize;
-
 		if (req->file->f_op->write_iter)
 			ret2 = call_write_iter(req->file, kiocb, &iter);
 		else
 			ret2 = loop_rw_iter(WRITE, req->file, kiocb, &iter);
-
-		if (!force_nonblock)
-			current->signal->rlim[RLIMIT_FSIZE].rlim_cur = RLIM_INFINITY;
 
 		/*
 		 * Raw bdev writes will return -EOPNOTSUPP for IOCB_NOWAIT. Just
@@ -3344,7 +3334,6 @@ static int io_fallocate_prep(struct io_kiocb *req,
 	req->sync.off = READ_ONCE(sqe->off);
 	req->sync.len = READ_ONCE(sqe->addr);
 	req->sync.mode = READ_ONCE(sqe->len);
-	req->fsize = rlimit(RLIMIT_FSIZE);
 	return 0;
 }
 
@@ -3355,11 +3344,8 @@ static int io_fallocate(struct io_kiocb *req, bool force_nonblock)
 	/* fallocate always requiring blocking context */
 	if (force_nonblock)
 		return -EAGAIN;
-
-	current->signal->rlim[RLIMIT_FSIZE].rlim_cur = req->fsize;
 	ret = vfs_fallocate(req->file, req->sync.mode, req->sync.off,
 				req->sync.len);
-	current->signal->rlim[RLIMIT_FSIZE].rlim_cur = RLIM_INFINITY;
 	if (ret < 0)
 		req_set_fail_links(req);
 	io_req_complete(req, ret);
@@ -4815,7 +4801,7 @@ static bool io_poll_remove_one(struct io_kiocb *req)
 			io_put_req(req);
 			/*
 			 * restore ->work because we will call
-			 * io_req_work_drop_env below when dropping the
+			 * io_req_clean_work below when dropping the
 			 * final reference.
 			 */
 			if (req->flags & REQ_F_WORK_INITIALIZED)
@@ -5269,6 +5255,9 @@ static int io_req_defer_prep(struct io_kiocb *req,
 	if (!sqe)
 		return 0;
 
+	if (io_alloc_async_ctx(req))
+		return -EAGAIN;
+
 	if (io_op_defs[req->opcode].file_table) {
 		io_req_init_async(req);
 		ret = io_grab_files(req);
@@ -5408,10 +5397,8 @@ static int io_req_defer(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return 0;
 
 	if (!req->io) {
-		if (io_alloc_async_ctx(req))
-			return -EAGAIN;
 		ret = io_req_defer_prep(req, sqe);
-		if (ret < 0)
+		if (ret)
 			return ret;
 	}
 	io_prep_async_link(req);
@@ -5462,9 +5449,6 @@ static void __io_clean_op(struct io_kiocb *req)
 	case IORING_OP_RECV:
 		if (req->flags & REQ_F_BUFFER_SELECTED)
 			kfree(req->sr_msg.kbuf);
-		break;
-	case IORING_OP_OPENAT:
-	case IORING_OP_OPENAT2:
 		break;
 	case IORING_OP_SPLICE:
 	case IORING_OP_TEE:
@@ -6017,11 +6001,8 @@ fail_req:
 		}
 	} else if (req->flags & REQ_F_FORCE_ASYNC) {
 		if (!req->io) {
-			ret = -EAGAIN;
-			if (io_alloc_async_ctx(req))
-				goto fail_req;
 			ret = io_req_defer_prep(req, sqe);
-			if (unlikely(ret < 0))
+			if (unlikely(ret))
 				goto fail_req;
 		}
 
@@ -6073,11 +6054,8 @@ static int io_submit_sqe(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 			head->flags |= REQ_F_IO_DRAIN;
 			ctx->drain_next = 1;
 		}
-		if (io_alloc_async_ctx(req))
-			return -EAGAIN;
-
 		ret = io_req_defer_prep(req, sqe);
-		if (ret) {
+		if (unlikely(ret)) {
 			/* fail even hard links since we don't submit */
 			head->flags |= REQ_F_FAIL_LINK;
 			return ret;
@@ -6100,11 +6078,8 @@ static int io_submit_sqe(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 			req->flags |= REQ_F_LINK_HEAD;
 			INIT_LIST_HEAD(&req->link_list);
 
-			if (io_alloc_async_ctx(req))
-				return -EAGAIN;
-
 			ret = io_req_defer_prep(req, sqe);
-			if (ret)
+			if (unlikely(ret))
 				req->flags |= REQ_F_FAIL_LINK;
 			*link = req;
 		} else {
