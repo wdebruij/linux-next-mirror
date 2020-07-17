@@ -258,6 +258,9 @@ static int __btrfs_map_block(struct btrfs_fs_info *fs_info,
  * may be used to exclude some operations from running concurrently without any
  * modifications to the list (see write_all_supers)
  *
+ * Is not required at mount and close times, because our device list is
+ * protected by the uuid_mutex at that point.
+ *
  * balance_mutex
  * -------------
  * protects balance structures (status, state) and context accessed from
@@ -602,6 +605,11 @@ static int btrfs_free_stale_devices(const char *path,
 	return ret;
 }
 
+/*
+ * This is only used on mount, and we are protected from competing things
+ * messing with our fs_devices by the uuid_mutex, thus we do not need the
+ * fs_devices->device_list_mutex here.
+ */
 static int btrfs_open_one_device(struct btrfs_fs_devices *fs_devices,
 			struct btrfs_device *device, fmode_t flags,
 			void *holder)
@@ -1230,7 +1238,6 @@ int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 
 	lockdep_assert_held(&uuid_mutex);
 
-	mutex_lock(&fs_devices->device_list_mutex);
 	if (fs_devices->opened) {
 		fs_devices->opened++;
 		ret = 0;
@@ -1238,7 +1245,6 @@ int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 		list_sort(NULL, &fs_devices->devices, devid_cmp);
 		ret = open_fs_devices(fs_devices, flags, holder);
 	}
-	mutex_unlock(&fs_devices->device_list_mutex);
 
 	return ret;
 }
