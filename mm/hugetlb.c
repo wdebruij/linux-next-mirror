@@ -1220,6 +1220,7 @@ static inline void ClearPageHugePoisoned(struct page *page)
 	page[3].mapping = NULL;
 }
 
+#ifdef CONFIG_ARCH_HAS_GIGANTIC_PAGE
 static void destroy_compound_gigantic_page(struct hstate *h, struct page *page,
 					   unsigned int order)
 {
@@ -1244,7 +1245,6 @@ static void destroy_compound_gigantic_page(struct hstate *h, struct page *page,
 	__ClearPageHead(page);
 }
 
-#ifdef CONFIG_ARCH_HAS_GIGANTIC_PAGE
 static void free_gigantic_page(struct page *page, unsigned int order)
 {
 	/*
