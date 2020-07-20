@@ -31,7 +31,7 @@ config LEDS_CLASS_FLASH
 	  as a module.
 
 config LEDS_CLASS_MULTICOLOR
-	tristate "LED MultiColor Class Support"
+	tristate "LED Multicolor Class Support"
 	depends on LEDS_CLASS
 	help
 	  This option enables the multicolor LED sysfs class in /sys/class/leds.
