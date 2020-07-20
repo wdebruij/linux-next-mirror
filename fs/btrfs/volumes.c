@@ -1146,12 +1146,12 @@ static void btrfs_close_one_device(struct btrfs_device *device)
 	ASSERT(atomic_read(&device->reada_in_flight) == 0);
 }
 
-static int close_fs_devices(struct btrfs_fs_devices *fs_devices)
+static void close_fs_devices(struct btrfs_fs_devices *fs_devices)
 {
 	struct btrfs_device *device, *tmp;
 
 	if (--fs_devices->opened > 0)
-		return 0;
+		return;
 
 	mutex_lock(&fs_devices->device_list_mutex);
 	list_for_each_entry_safe(device, tmp, &fs_devices->devices, dev_list) {
@@ -1163,17 +1163,15 @@ static int close_fs_devices(struct btrfs_fs_devices *fs_devices)
 	WARN_ON(fs_devices->rw_devices);
 	fs_devices->opened = 0;
 	fs_devices->seeding = false;
-
-	return 0;
+	fs_devices->fs_info = NULL;
 }
 
-int btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
+void btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
 {
 	struct btrfs_fs_devices *seed_devices = NULL;
-	int ret;
 
 	mutex_lock(&uuid_mutex);
-	ret = close_fs_devices(fs_devices);
+	close_fs_devices(fs_devices);
 	if (!fs_devices->opened) {
 		seed_devices = fs_devices->seed;
 		fs_devices->seed = NULL;
@@ -1186,7 +1184,6 @@ int btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
 		close_fs_devices(fs_devices);
 		free_fs_devices(fs_devices);
 	}
-	return ret;
 }
 
 static int open_fs_devices(struct btrfs_fs_devices *fs_devices,
@@ -7174,6 +7171,7 @@ void btrfs_init_devices_late(struct btrfs_fs_info *fs_info)
 			device->fs_info = fs_info;
 		mutex_unlock(&fs_devices->device_list_mutex);
 
+		fs_devices->fs_info = fs_info;
 		fs_devices = fs_devices->seed;
 	}
 }
@@ -7472,24 +7470,6 @@ void btrfs_commit_device_sizes(struct btrfs_transaction *trans)
 	mutex_unlock(&trans->fs_info->chunk_mutex);
 }
 
-void btrfs_set_fs_info_ptr(struct btrfs_fs_info *fs_info)
-{
-	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
-	while (fs_devices) {
-		fs_devices->fs_info = fs_info;
-		fs_devices = fs_devices->seed;
-	}
-}
-
-void btrfs_reset_fs_info_ptr(struct btrfs_fs_info *fs_info)
-{
-	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
-	while (fs_devices) {
-		fs_devices->fs_info = NULL;
-		fs_devices = fs_devices->seed;
-	}
-}
-
 /*
  * Multiplicity factor for simple profiles: DUP, RAID1-like and RAID10.
  */
@@ -7499,8 +7479,6 @@ int btrfs_bg_type_to_factor(u64 flags)
 
 	return btrfs_raid_array[index].ncopies;
 }
-
-
 
 static int verify_one_dev_extent(struct btrfs_fs_info *fs_info,
 				 u64 chunk_offset, u64 devid,
