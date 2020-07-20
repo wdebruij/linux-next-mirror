@@ -258,6 +258,9 @@ static int __btrfs_map_block(struct btrfs_fs_info *fs_info,
  * may be used to exclude some operations from running concurrently without any
  * modifications to the list (see write_all_supers)
  *
+ * Is not required at mount and close times, because our device list is
+ * protected by the uuid_mutex at that point.
+ *
  * balance_mutex
  * -------------
  * protects balance structures (status, state) and context accessed from
@@ -602,6 +605,11 @@ static int btrfs_free_stale_devices(const char *path,
 	return ret;
 }
 
+/*
+ * This is only used on mount, and we are protected from competing things
+ * messing with our fs_devices by the uuid_mutex, thus we do not need the
+ * fs_devices->device_list_mutex here.
+ */
 static int btrfs_open_one_device(struct btrfs_fs_devices *fs_devices,
 			struct btrfs_device *device, fmode_t flags,
 			void *holder)
@@ -1138,12 +1146,12 @@ static void btrfs_close_one_device(struct btrfs_device *device)
 	ASSERT(atomic_read(&device->reada_in_flight) == 0);
 }
 
-static int close_fs_devices(struct btrfs_fs_devices *fs_devices)
+static void close_fs_devices(struct btrfs_fs_devices *fs_devices)
 {
 	struct btrfs_device *device, *tmp;
 
 	if (--fs_devices->opened > 0)
-		return 0;
+		return;
 
 	mutex_lock(&fs_devices->device_list_mutex);
 	list_for_each_entry_safe(device, tmp, &fs_devices->devices, dev_list) {
@@ -1155,17 +1163,15 @@ static int close_fs_devices(struct btrfs_fs_devices *fs_devices)
 	WARN_ON(fs_devices->rw_devices);
 	fs_devices->opened = 0;
 	fs_devices->seeding = false;
-
-	return 0;
+	fs_devices->fs_info = NULL;
 }
 
-int btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
+void btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
 {
 	struct btrfs_fs_devices *seed_devices = NULL;
-	int ret;
 
 	mutex_lock(&uuid_mutex);
-	ret = close_fs_devices(fs_devices);
+	close_fs_devices(fs_devices);
 	if (!fs_devices->opened) {
 		seed_devices = fs_devices->seed;
 		fs_devices->seed = NULL;
@@ -1178,7 +1184,6 @@ int btrfs_close_devices(struct btrfs_fs_devices *fs_devices)
 		close_fs_devices(fs_devices);
 		free_fs_devices(fs_devices);
 	}
-	return ret;
 }
 
 static int open_fs_devices(struct btrfs_fs_devices *fs_devices,
@@ -1230,7 +1235,6 @@ int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 
 	lockdep_assert_held(&uuid_mutex);
 
-	mutex_lock(&fs_devices->device_list_mutex);
 	if (fs_devices->opened) {
 		fs_devices->opened++;
 		ret = 0;
@@ -1238,7 +1242,6 @@ int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 		list_sort(NULL, &fs_devices->devices, devid_cmp);
 		ret = open_fs_devices(fs_devices, flags, holder);
 	}
-	mutex_unlock(&fs_devices->device_list_mutex);
 
 	return ret;
 }
@@ -7062,7 +7065,6 @@ int btrfs_read_chunk_tree(struct btrfs_fs_info *fs_info)
 	 * otherwise we don't need it.
 	 */
 	mutex_lock(&uuid_mutex);
-	mutex_lock(&fs_info->chunk_mutex);
 
 	/*
 	 * It is possible for mount and umount to race in such a way that
@@ -7120,7 +7122,9 @@ int btrfs_read_chunk_tree(struct btrfs_fs_info *fs_info)
 		} else if (found_key.type == BTRFS_CHUNK_ITEM_KEY) {
 			struct btrfs_chunk *chunk;
 			chunk = btrfs_item_ptr(leaf, slot, struct btrfs_chunk);
+			mutex_lock(&fs_info->chunk_mutex);
 			ret = read_one_chunk(&found_key, leaf, chunk);
+			mutex_unlock(&fs_info->chunk_mutex);
 			if (ret)
 				goto error;
 		}
@@ -7150,7 +7154,6 @@ int btrfs_read_chunk_tree(struct btrfs_fs_info *fs_info)
 	}
 	ret = 0;
 error:
-	mutex_unlock(&fs_info->chunk_mutex);
 	mutex_unlock(&uuid_mutex);
 
 	btrfs_free_path(path);
@@ -7168,6 +7171,7 @@ void btrfs_init_devices_late(struct btrfs_fs_info *fs_info)
 			device->fs_info = fs_info;
 		mutex_unlock(&fs_devices->device_list_mutex);
 
+		fs_devices->fs_info = fs_info;
 		fs_devices = fs_devices->seed;
 	}
 }
@@ -7466,24 +7470,6 @@ void btrfs_commit_device_sizes(struct btrfs_transaction *trans)
 	mutex_unlock(&trans->fs_info->chunk_mutex);
 }
 
-void btrfs_set_fs_info_ptr(struct btrfs_fs_info *fs_info)
-{
-	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
-	while (fs_devices) {
-		fs_devices->fs_info = fs_info;
-		fs_devices = fs_devices->seed;
-	}
-}
-
-void btrfs_reset_fs_info_ptr(struct btrfs_fs_info *fs_info)
-{
-	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
-	while (fs_devices) {
-		fs_devices->fs_info = NULL;
-		fs_devices = fs_devices->seed;
-	}
-}
-
 /*
  * Multiplicity factor for simple profiles: DUP, RAID1-like and RAID10.
  */
@@ -7493,8 +7479,6 @@ int btrfs_bg_type_to_factor(u64 flags)
 
 	return btrfs_raid_array[index].ncopies;
 }
-
-
 
 static int verify_one_dev_extent(struct btrfs_fs_info *fs_info,
 				 u64 chunk_offset, u64 devid,
