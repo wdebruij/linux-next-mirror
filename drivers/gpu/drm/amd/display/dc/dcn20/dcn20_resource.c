@@ -1043,7 +1043,9 @@ static const struct dc_plane_cap plane_cap = {
 			.argb8888 = 250,
 			.nv12 = 250,
 			.fp16 = 1
-	}
+	},
+	16,
+	16
 };
 static const struct resource_caps res_cap_nv14 = {
 		.num_timing_generator = 5,
@@ -2102,11 +2104,20 @@ int dcn20_populate_dml_pipes_from_context(
 		if (res_ctx->pipe_ctx[i].top_pipe && res_ctx->pipe_ctx[i].top_pipe->plane_state
 				== res_ctx->pipe_ctx[i].plane_state) {
 			struct pipe_ctx *first_pipe = res_ctx->pipe_ctx[i].top_pipe;
+			int split_idx = 0;
 
 			while (first_pipe->top_pipe && first_pipe->top_pipe->plane_state
-					== res_ctx->pipe_ctx[i].plane_state)
+					== res_ctx->pipe_ctx[i].plane_state) {
 				first_pipe = first_pipe->top_pipe;
-			pipes[pipe_cnt].pipe.src.hsplit_grp = first_pipe->pipe_idx;
+				split_idx++;
+			}
+			/* Treat 4to1 mpc combine as an mpo of 2 2-to-1 combines */
+			if (split_idx == 0)
+				pipes[pipe_cnt].pipe.src.hsplit_grp = first_pipe->pipe_idx;
+			else if (split_idx == 1)
+				pipes[pipe_cnt].pipe.src.hsplit_grp = res_ctx->pipe_ctx[i].pipe_idx;
+			else if (split_idx == 2)
+				pipes[pipe_cnt].pipe.src.hsplit_grp = res_ctx->pipe_ctx[i].top_pipe->pipe_idx;
 		} else if (res_ctx->pipe_ctx[i].prev_odm_pipe) {
 			struct pipe_ctx *first_pipe = res_ctx->pipe_ctx[i].prev_odm_pipe;
 
@@ -2258,7 +2269,7 @@ int dcn20_populate_dml_pipes_from_context(
 					|| (res_ctx->pipe_ctx[i].top_pipe && res_ctx->pipe_ctx[i].top_pipe->plane_state == pln)
 					|| pipes[pipe_cnt].pipe.dest.odm_combine != dm_odm_combine_mode_disabled;
 
-			/* stereo is never split, nor odm combine */
+			/* stereo is not split */
 			if (pln->stereo_format == PLANE_STEREO_FORMAT_SIDE_BY_SIDE ||
 			    pln->stereo_format == PLANE_STEREO_FORMAT_TOP_AND_BOTTOM) {
 				pipes[pipe_cnt].pipe.src.is_hsplit = false;
@@ -2721,12 +2732,11 @@ int dcn20_validate_apply_pipe_split_flags(
 		if (!context->res_ctx.pipe_ctx[i].stream)
 			continue;
 
-		if (force_split || v->NoOfDPP[vlevel][max_mpc_comb][pipe_plane] > 1) {
-			if (split4mpc)
-				split[i] = 4;
-			else
+		if (split4mpc || v->NoOfDPP[vlevel][max_mpc_comb][pipe_plane] == 4)
+			split[i] = 4;
+		else if (force_split || v->NoOfDPP[vlevel][max_mpc_comb][pipe_plane] == 2)
 				split[i] = 2;
-		}
+
 		if ((pipe->stream->view_format ==
 				VIEW_3D_FORMAT_SIDE_BY_SIDE ||
 				pipe->stream->view_format ==
@@ -3356,6 +3366,7 @@ static struct resource_funcs dcn20_res_pool_funcs = {
 	.validate_bandwidth = dcn20_validate_bandwidth,
 	.acquire_idle_pipe_for_layer = dcn20_acquire_idle_pipe_for_layer,
 	.add_stream_to_ctx = dcn20_add_stream_to_ctx,
+	.add_dsc_to_stream_resource = dcn20_add_dsc_to_stream_resource,
 	.remove_stream_from_ctx = dcn20_remove_stream_from_ctx,
 	.populate_dml_writeback_from_context = dcn20_populate_dml_writeback_from_context,
 	.patch_unknown_plane_state = dcn20_patch_unknown_plane_state,
