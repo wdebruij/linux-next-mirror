@@ -70,20 +70,17 @@ static int versatile_pci_probe(struct platform_device *pdev)
 	int ret, i, myslot = -1, mem = 1;
 	u32 val;
 	void __iomem *local_pci_cfg_base;
-	struct pci_bus *bus, *child;
 	struct pci_host_bridge *bridge;
 
 	bridge = devm_pci_alloc_host_bridge(dev, 0);
 	if (!bridge)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	versatile_pci_base = devm_ioremap_resource(dev, res);
+	versatile_pci_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(versatile_pci_base))
 		return PTR_ERR(versatile_pci_base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	versatile_cfg_base[0] = devm_ioremap_resource(dev, res);
+	versatile_cfg_base[0] = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(versatile_cfg_base[0]))
 		return PTR_ERR(versatile_cfg_base[0]);
 
@@ -164,18 +161,7 @@ static int versatile_pci_probe(struct platform_device *pdev)
 	bridge->map_irq = of_irq_parse_and_map_pci;
 	bridge->swizzle_irq = pci_common_swizzle;
 
-	ret = pci_scan_root_bus_bridge(bridge);
-	if (ret < 0)
-		return ret;
-
-	bus = bridge->bus;
-
-	pci_assign_unassigned_bus_resources(bus);
-	list_for_each_entry(child, &bus->children, node)
-		pcie_bus_configure_settings(child);
-	pci_bus_add_devices(bus);
-
-	return 0;
+	return pci_host_probe(bridge);
 }
 
 static const struct of_device_id versatile_pci_of_match[] = {
