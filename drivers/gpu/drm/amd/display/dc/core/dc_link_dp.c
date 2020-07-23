@@ -1104,10 +1104,6 @@ static inline enum link_training_result perform_link_training_int(
 	dpcd_pattern.v1_4.TRAINING_PATTERN_SET = DPCD_TRAINING_PATTERN_VIDEOIDLE;
 	dpcd_set_training_pattern(link, dpcd_pattern);
 
-	/* delay 5ms after notifying sink of idle pattern before switching output */
-	if (link->connector_signal != SIGNAL_TYPE_EDP)
-		msleep(5);
-
 	/* 4. mainlink output idle pattern*/
 	dp_set_hw_test_pattern(link, DP_TEST_PATTERN_VIDEO_MODE, NULL, 0);
 
@@ -3097,62 +3093,63 @@ static void get_active_converter_info(
 		uint8_t det_caps[16]; /* CTS 4.2.2.7 expects source to read Detailed Capabilities Info : 00080h-0008F.*/
 		union dwnstream_port_caps_byte0 *port_caps =
 			(union dwnstream_port_caps_byte0 *)det_caps;
-		core_link_read_dpcd(link, DP_DOWNSTREAM_PORT_0,
-				det_caps, sizeof(det_caps));
+		if (core_link_read_dpcd(link, DP_DOWNSTREAM_PORT_0,
+				det_caps, sizeof(det_caps)) == DC_OK) {
 
-		switch (port_caps->bits.DWN_STRM_PORTX_TYPE) {
-		/*Handle DP case as DONGLE_NONE*/
-		case DOWN_STREAM_DETAILED_DP:
-			link->dpcd_caps.dongle_type = DISPLAY_DONGLE_NONE;
-			break;
-		case DOWN_STREAM_DETAILED_VGA:
-			link->dpcd_caps.dongle_type =
-				DISPLAY_DONGLE_DP_VGA_CONVERTER;
-			break;
-		case DOWN_STREAM_DETAILED_DVI:
-			link->dpcd_caps.dongle_type =
-				DISPLAY_DONGLE_DP_DVI_CONVERTER;
-			break;
-		case DOWN_STREAM_DETAILED_HDMI:
-		case DOWN_STREAM_DETAILED_DP_PLUS_PLUS:
-			/*Handle DP++ active converter case, process DP++ case as HDMI case according DP1.4 spec*/
-			link->dpcd_caps.dongle_type =
-				DISPLAY_DONGLE_DP_HDMI_CONVERTER;
+			switch (port_caps->bits.DWN_STRM_PORTX_TYPE) {
+			/*Handle DP case as DONGLE_NONE*/
+			case DOWN_STREAM_DETAILED_DP:
+				link->dpcd_caps.dongle_type = DISPLAY_DONGLE_NONE;
+				break;
+			case DOWN_STREAM_DETAILED_VGA:
+				link->dpcd_caps.dongle_type =
+					DISPLAY_DONGLE_DP_VGA_CONVERTER;
+				break;
+			case DOWN_STREAM_DETAILED_DVI:
+				link->dpcd_caps.dongle_type =
+					DISPLAY_DONGLE_DP_DVI_CONVERTER;
+				break;
+			case DOWN_STREAM_DETAILED_HDMI:
+			case DOWN_STREAM_DETAILED_DP_PLUS_PLUS:
+				/*Handle DP++ active converter case, process DP++ case as HDMI case according DP1.4 spec*/
+				link->dpcd_caps.dongle_type =
+					DISPLAY_DONGLE_DP_HDMI_CONVERTER;
 
-			link->dpcd_caps.dongle_caps.dongle_type = link->dpcd_caps.dongle_type;
-			if (ds_port.fields.DETAILED_CAPS) {
+				link->dpcd_caps.dongle_caps.dongle_type = link->dpcd_caps.dongle_type;
+				if (ds_port.fields.DETAILED_CAPS) {
 
-				union dwnstream_port_caps_byte3_hdmi
-					hdmi_caps = {.raw = det_caps[3] };
-				union dwnstream_port_caps_byte2
-					hdmi_color_caps = {.raw = det_caps[2] };
-				link->dpcd_caps.dongle_caps.dp_hdmi_max_pixel_clk_in_khz =
-					det_caps[1] * 2500;
+					union dwnstream_port_caps_byte3_hdmi
+						hdmi_caps = {.raw = det_caps[3] };
+					union dwnstream_port_caps_byte2
+						hdmi_color_caps = {.raw = det_caps[2] };
+					link->dpcd_caps.dongle_caps.dp_hdmi_max_pixel_clk_in_khz =
+						det_caps[1] * 2500;
 
-				link->dpcd_caps.dongle_caps.is_dp_hdmi_s3d_converter =
-					hdmi_caps.bits.FRAME_SEQ_TO_FRAME_PACK;
-				/*YCBCR capability only for HDMI case*/
-				if (port_caps->bits.DWN_STRM_PORTX_TYPE
-						== DOWN_STREAM_DETAILED_HDMI) {
-					link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr422_pass_through =
-							hdmi_caps.bits.YCrCr422_PASS_THROUGH;
-					link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr420_pass_through =
-							hdmi_caps.bits.YCrCr420_PASS_THROUGH;
-					link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr422_converter =
-							hdmi_caps.bits.YCrCr422_CONVERSION;
-					link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr420_converter =
-							hdmi_caps.bits.YCrCr420_CONVERSION;
+					link->dpcd_caps.dongle_caps.is_dp_hdmi_s3d_converter =
+						hdmi_caps.bits.FRAME_SEQ_TO_FRAME_PACK;
+					/*YCBCR capability only for HDMI case*/
+					if (port_caps->bits.DWN_STRM_PORTX_TYPE
+							== DOWN_STREAM_DETAILED_HDMI) {
+						link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr422_pass_through =
+								hdmi_caps.bits.YCrCr422_PASS_THROUGH;
+						link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr420_pass_through =
+								hdmi_caps.bits.YCrCr420_PASS_THROUGH;
+						link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr422_converter =
+								hdmi_caps.bits.YCrCr422_CONVERSION;
+						link->dpcd_caps.dongle_caps.is_dp_hdmi_ycbcr420_converter =
+								hdmi_caps.bits.YCrCr420_CONVERSION;
+					}
+
+					link->dpcd_caps.dongle_caps.dp_hdmi_max_bpc =
+						translate_dpcd_max_bpc(
+							hdmi_color_caps.bits.MAX_BITS_PER_COLOR_COMPONENT);
+
+					if (link->dpcd_caps.dongle_caps.dp_hdmi_max_pixel_clk_in_khz != 0)
+						link->dpcd_caps.dongle_caps.extendedCapValid = true;
 				}
 
-				link->dpcd_caps.dongle_caps.dp_hdmi_max_bpc =
-					translate_dpcd_max_bpc(
-						hdmi_color_caps.bits.MAX_BITS_PER_COLOR_COMPONENT);
-
-				if (link->dpcd_caps.dongle_caps.dp_hdmi_max_pixel_clk_in_khz != 0)
-					link->dpcd_caps.dongle_caps.extendedCapValid = true;
+				break;
 			}
-
-			break;
 		}
 	}
 
@@ -3522,8 +3519,8 @@ static bool retrieve_link_cap(struct dc_link *link)
 		status = core_link_read_dpcd(
 				link,
 				DP_DSC_BRANCH_OVERALL_THROUGHPUT_0,
-				link->dpcd_caps.dsc_caps.dsc_ext_caps.raw,
-				sizeof(link->dpcd_caps.dsc_caps.dsc_ext_caps.raw));
+				link->dpcd_caps.dsc_caps.dsc_branch_decoder_caps.raw,
+				sizeof(link->dpcd_caps.dsc_caps.dsc_branch_decoder_caps.raw));
 	}
 
 	if (!dpcd_read_sink_ext_caps(link))

@@ -21,12 +21,14 @@
  *
  */
 
+#define SWSMU_CODE_LAYER_L2
+
 #include <linux/firmware.h>
 #include "amdgpu.h"
 #include "amdgpu_smu.h"
-#include "smu_internal.h"
 #include "atomfirmware.h"
 #include "amdgpu_atomfirmware.h"
+#include "amdgpu_atombios.h"
 #include "smu_v11_0.h"
 #include "smu11_driver_if_arcturus.h"
 #include "soc15_common.h"
@@ -43,6 +45,7 @@
 #include <linux/i2c.h>
 #include <linux/pci.h>
 #include "amdgpu_ras.h"
+#include "smu_cmn.h"
 
 /*
  * DO NOT use these for err/warn/info/debug messages.
@@ -56,12 +59,6 @@
 
 #define to_amdgpu_device(x) (container_of(x, struct amdgpu_device, pm.smu_i2c))
 
-#define CTF_OFFSET_EDGE			5
-#define CTF_OFFSET_HOTSPOT		5
-#define CTF_OFFSET_HBM			5
-
-#define MSG_MAP(msg, index, valid_in_vf) \
-	[SMU_MSG_##msg] = {1, (index), (valid_in_vf)}
 #define ARCTURUS_FEA_MAP(smu_feature, arcturus_feature) \
 	[smu_feature] = {1, (arcturus_feature)}
 
@@ -82,7 +79,7 @@
 /* possible frequency drift (1Mhz) */
 #define EPSILON				1
 
-static struct smu_11_0_msg_mapping arcturus_message_map[SMU_MSG_MAX_COUNT] = {
+static const struct cmn2asic_msg_mapping arcturus_message_map[SMU_MSG_MAX_COUNT] = {
 	MSG_MAP(TestMessage,			     PPSMC_MSG_TestMessage,			0),
 	MSG_MAP(GetSmuVersion,			     PPSMC_MSG_GetSmuVersion,			1),
 	MSG_MAP(GetDriverIfVersion,		     PPSMC_MSG_GetDriverIfVersion,		1),
@@ -145,7 +142,7 @@ static struct smu_11_0_msg_mapping arcturus_message_map[SMU_MSG_MAX_COUNT] = {
 	MSG_MAP(ReadSerialNumBottom32,		     PPSMC_MSG_ReadSerialNumBottom32,		1),
 };
 
-static struct smu_11_0_cmn2aisc_mapping arcturus_clk_map[SMU_CLK_COUNT] = {
+static const struct cmn2asic_mapping arcturus_clk_map[SMU_CLK_COUNT] = {
 	CLK_MAP(GFXCLK, PPCLK_GFXCLK),
 	CLK_MAP(SCLK,	PPCLK_GFXCLK),
 	CLK_MAP(SOCCLK, PPCLK_SOCCLK),
@@ -156,7 +153,7 @@ static struct smu_11_0_cmn2aisc_mapping arcturus_clk_map[SMU_CLK_COUNT] = {
 	CLK_MAP(VCLK, PPCLK_VCLK),
 };
 
-static struct smu_11_0_cmn2aisc_mapping arcturus_feature_mask_map[SMU_FEATURE_COUNT] = {
+static const struct cmn2asic_mapping arcturus_feature_mask_map[SMU_FEATURE_COUNT] = {
 	FEA_MAP(DPM_PREFETCHER),
 	FEA_MAP(DPM_GFXCLK),
 	FEA_MAP(DPM_UCLK),
@@ -185,7 +182,7 @@ static struct smu_11_0_cmn2aisc_mapping arcturus_feature_mask_map[SMU_FEATURE_CO
 	FEA_MAP(TEMP_DEPENDENT_VMIN),
 };
 
-static struct smu_11_0_cmn2aisc_mapping arcturus_table_map[SMU_TABLE_COUNT] = {
+static const struct cmn2asic_mapping arcturus_table_map[SMU_TABLE_COUNT] = {
 	TAB_MAP(PPTABLE),
 	TAB_MAP(AVFS),
 	TAB_MAP(AVFS_PSM_DEBUG),
@@ -198,12 +195,12 @@ static struct smu_11_0_cmn2aisc_mapping arcturus_table_map[SMU_TABLE_COUNT] = {
 	TAB_MAP(ACTIVITY_MONITOR_COEFF),
 };
 
-static struct smu_11_0_cmn2aisc_mapping arcturus_pwr_src_map[SMU_POWER_SOURCE_COUNT] = {
+static const struct cmn2asic_mapping arcturus_pwr_src_map[SMU_POWER_SOURCE_COUNT] = {
 	PWR_MAP(AC),
 	PWR_MAP(DC),
 };
 
-static struct smu_11_0_cmn2aisc_mapping arcturus_workload_map[PP_SMC_POWER_PROFILE_COUNT] = {
+static const struct cmn2asic_mapping arcturus_workload_map[PP_SMC_POWER_PROFILE_COUNT] = {
 	WORKLOAD_MAP(PP_SMC_POWER_PROFILE_BOOTUP_DEFAULT,	WORKLOAD_PPLIB_DEFAULT_BIT),
 	WORKLOAD_MAP(PP_SMC_POWER_PROFILE_POWERSAVING,		WORKLOAD_PPLIB_POWER_SAVING_BIT),
 	WORKLOAD_MAP(PP_SMC_POWER_PROFILE_VIDEO,		WORKLOAD_PPLIB_VIDEO_BIT),
@@ -211,104 +208,10 @@ static struct smu_11_0_cmn2aisc_mapping arcturus_workload_map[PP_SMC_POWER_PROFI
 	WORKLOAD_MAP(PP_SMC_POWER_PROFILE_CUSTOM,		WORKLOAD_PPLIB_CUSTOM_BIT),
 };
 
-static int arcturus_get_smu_msg_index(struct smu_context *smc, uint32_t index)
-{
-	struct smu_11_0_msg_mapping mapping;
-
-	if (index >= SMU_MSG_MAX_COUNT)
-		return -EINVAL;
-
-	mapping = arcturus_message_map[index];
-	if (!(mapping.valid_mapping))
-		return -EINVAL;
-
-	if (amdgpu_sriov_vf(smc->adev) && !mapping.valid_in_vf)
-		return -EACCES;
-
-	return mapping.map_to;
-}
-
-static int arcturus_get_smu_clk_index(struct smu_context *smc, uint32_t index)
-{
-	struct smu_11_0_cmn2aisc_mapping mapping;
-
-	if (index >= SMU_CLK_COUNT)
-		return -EINVAL;
-
-	mapping = arcturus_clk_map[index];
-	if (!(mapping.valid_mapping)) {
-		dev_warn(smc->adev->dev, "Unsupported SMU clk: %d\n", index);
-		return -EINVAL;
-	}
-
-	return mapping.map_to;
-}
-
-static int arcturus_get_smu_feature_index(struct smu_context *smc, uint32_t index)
-{
-	struct smu_11_0_cmn2aisc_mapping mapping;
-
-	if (index >= SMU_FEATURE_COUNT)
-		return -EINVAL;
-
-	mapping = arcturus_feature_mask_map[index];
-	if (!(mapping.valid_mapping)) {
-		return -EINVAL;
-	}
-
-	return mapping.map_to;
-}
-
-static int arcturus_get_smu_table_index(struct smu_context *smc, uint32_t index)
-{
-	struct smu_11_0_cmn2aisc_mapping mapping;
-
-	if (index >= SMU_TABLE_COUNT)
-		return -EINVAL;
-
-	mapping = arcturus_table_map[index];
-	if (!(mapping.valid_mapping)) {
-		dev_warn(smc->adev->dev, "Unsupported SMU table: %d\n", index);
-		return -EINVAL;
-	}
-
-	return mapping.map_to;
-}
-
-static int arcturus_get_pwr_src_index(struct smu_context *smc, uint32_t index)
-{
-	struct smu_11_0_cmn2aisc_mapping mapping;
-
-	if (index >= SMU_POWER_SOURCE_COUNT)
-		return -EINVAL;
-
-	mapping = arcturus_pwr_src_map[index];
-	if (!(mapping.valid_mapping)) {
-		dev_warn(smc->adev->dev, "Unsupported SMU power source: %d\n", index);
-		return -EINVAL;
-	}
-
-	return mapping.map_to;
-}
-
-
-static int arcturus_get_workload_type(struct smu_context *smu, enum PP_SMC_POWER_PROFILE profile)
-{
-	struct smu_11_0_cmn2aisc_mapping mapping;
-
-	if (profile > PP_SMC_POWER_PROFILE_CUSTOM)
-		return -EINVAL;
-
-	mapping = arcturus_workload_map[profile];
-	if (!(mapping.valid_mapping))
-		return -EINVAL;
-
-	return mapping.map_to;
-}
-
-static int arcturus_tables_init(struct smu_context *smu, struct smu_table *tables)
+static int arcturus_tables_init(struct smu_context *smu)
 {
 	struct smu_table_context *smu_table = &smu->smu_table;
+	struct smu_table *tables = smu_table->tables;
 
 	SMU_TABLE_INIT(tables, SMU_TABLE_PPTABLE, sizeof(PPTable_t),
 		       PAGE_SIZE, AMDGPU_GEM_DOMAIN_VRAM);
@@ -338,23 +241,11 @@ static int arcturus_allocate_dpm_context(struct smu_context *smu)
 {
 	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
 
-	if (smu_dpm->dpm_context)
-		return -EINVAL;
-
-	smu_dpm->dpm_context = kzalloc(sizeof(struct arcturus_dpm_table),
+	smu_dpm->dpm_context = kzalloc(sizeof(struct smu_11_0_dpm_context),
 				       GFP_KERNEL);
 	if (!smu_dpm->dpm_context)
 		return -ENOMEM;
-
-	if (smu_dpm->golden_dpm_context)
-		return -EINVAL;
-
-	smu_dpm->golden_dpm_context = kzalloc(sizeof(struct arcturus_dpm_table),
-					      GFP_KERNEL);
-	if (!smu_dpm->golden_dpm_context)
-		return -ENOMEM;
-
-	smu_dpm->dpm_context_size = sizeof(struct arcturus_dpm_table);
+	smu_dpm->dpm_context_size = sizeof(struct smu_11_0_dpm_context);
 
 	smu_dpm->dpm_current_power_state = kzalloc(sizeof(struct smu_power_state),
 				       GFP_KERNEL);
@@ -367,6 +258,21 @@ static int arcturus_allocate_dpm_context(struct smu_context *smu)
 		return -ENOMEM;
 
 	return 0;
+}
+
+static int arcturus_init_smc_tables(struct smu_context *smu)
+{
+	int ret = 0;
+
+	ret = arcturus_tables_init(smu);
+	if (ret)
+		return ret;
+
+	ret = arcturus_allocate_dpm_context(smu);
+	if (ret)
+		return ret;
+
+	return smu_v11_0_init_smc_tables(smu);
 }
 
 static int
@@ -382,119 +288,84 @@ arcturus_get_allowed_feature_mask(struct smu_context *smu,
 	return 0;
 }
 
-static int
-arcturus_set_single_dpm_table(struct smu_context *smu,
-			    struct arcturus_single_dpm_table *single_dpm_table,
-			    PPCLK_e clk_id)
-{
-	int ret = 0;
-	uint32_t i, num_of_levels = 0, clk;
-
-	ret = smu_send_smc_msg_with_param(smu,
-			SMU_MSG_GetDpmFreqByIndex,
-			(clk_id << 16 | 0xFF),
-			&num_of_levels);
-	if (ret) {
-		dev_err(smu->adev->dev, "[%s] failed to get dpm levels!\n", __func__);
-		return ret;
-	}
-
-	single_dpm_table->count = num_of_levels;
-	for (i = 0; i < num_of_levels; i++) {
-		ret = smu_send_smc_msg_with_param(smu,
-				SMU_MSG_GetDpmFreqByIndex,
-				(clk_id << 16 | i),
-				&clk);
-		if (ret) {
-			dev_err(smu->adev->dev, "[%s] failed to get dpm freq by index!\n", __func__);
-			return ret;
-		}
-		single_dpm_table->dpm_levels[i].value = clk;
-		single_dpm_table->dpm_levels[i].enabled = true;
-	}
-	return 0;
-}
-
-static void arcturus_init_single_dpm_state(struct arcturus_dpm_state *dpm_state)
-{
-	dpm_state->soft_min_level = 0x0;
-	dpm_state->soft_max_level = 0xffff;
-        dpm_state->hard_min_level = 0x0;
-        dpm_state->hard_max_level = 0xffff;
-}
-
 static int arcturus_set_default_dpm_table(struct smu_context *smu)
 {
-	int ret;
+	struct smu_11_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
+	PPTable_t *driver_ppt = smu->smu_table.driver_pptable;
+	struct smu_11_0_dpm_table *dpm_table = NULL;
+	int ret = 0;
 
-	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
-	struct arcturus_dpm_table *dpm_table = NULL;
-	struct arcturus_single_dpm_table *single_dpm_table;
-
-	dpm_table = smu_dpm->dpm_context;
-
-	/* socclk */
-	single_dpm_table = &(dpm_table->soc_table);
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT)) {
-		ret = arcturus_set_single_dpm_table(smu, single_dpm_table,
-						  PPCLK_SOCCLK);
-		if (ret) {
-			dev_err(smu->adev->dev, "[%s] failed to get socclk dpm levels!\n", __func__);
+	/* socclk dpm table setup */
+	dpm_table = &dpm_context->dpm_tables.soc_table;
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT)) {
+		ret = smu_v11_0_set_single_dpm_table(smu,
+						     SMU_SOCCLK,
+						     dpm_table);
+		if (ret)
 			return ret;
-		}
+		dpm_table->is_fine_grained =
+			!driver_ppt->DpmDescriptor[PPCLK_SOCCLK].SnapToDiscrete;
 	} else {
-		single_dpm_table->count = 1;
-		single_dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.socclk / 100;
+		dpm_table->count = 1;
+		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.socclk / 100;
+		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
-	arcturus_init_single_dpm_state(&(single_dpm_table->dpm_state));
 
-	/* gfxclk */
-	single_dpm_table = &(dpm_table->gfx_table);
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT)) {
-		ret = arcturus_set_single_dpm_table(smu, single_dpm_table,
-						  PPCLK_GFXCLK);
-		if (ret) {
-			dev_err(smu->adev->dev, "[SetupDefaultDpmTable] failed to get gfxclk dpm levels!");
+	/* gfxclk dpm table setup */
+	dpm_table = &dpm_context->dpm_tables.gfx_table;
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT)) {
+		ret = smu_v11_0_set_single_dpm_table(smu,
+						     SMU_GFXCLK,
+						     dpm_table);
+		if (ret)
 			return ret;
-		}
+		dpm_table->is_fine_grained =
+			!driver_ppt->DpmDescriptor[PPCLK_GFXCLK].SnapToDiscrete;
 	} else {
-		single_dpm_table->count = 1;
-		single_dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.gfxclk / 100;
+		dpm_table->count = 1;
+		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.gfxclk / 100;
+		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
-	arcturus_init_single_dpm_state(&(single_dpm_table->dpm_state));
 
-	/* memclk */
-	single_dpm_table = &(dpm_table->mem_table);
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT)) {
-		ret = arcturus_set_single_dpm_table(smu, single_dpm_table,
-						  PPCLK_UCLK);
-		if (ret) {
-			dev_err(smu->adev->dev, "[SetupDefaultDpmTable] failed to get memclk dpm levels!");
+	/* memclk dpm table setup */
+	dpm_table = &dpm_context->dpm_tables.uclk_table;
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT)) {
+		ret = smu_v11_0_set_single_dpm_table(smu,
+						     SMU_UCLK,
+						     dpm_table);
+		if (ret)
 			return ret;
-		}
+		dpm_table->is_fine_grained =
+			!driver_ppt->DpmDescriptor[PPCLK_UCLK].SnapToDiscrete;
 	} else {
-		single_dpm_table->count = 1;
-		single_dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.uclk / 100;
+		dpm_table->count = 1;
+		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.uclk / 100;
+		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
-	arcturus_init_single_dpm_state(&(single_dpm_table->dpm_state));
 
-	/* fclk */
-	single_dpm_table = &(dpm_table->fclk_table);
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_FCLK_BIT)) {
-		ret = arcturus_set_single_dpm_table(smu, single_dpm_table,
-						  PPCLK_FCLK);
-		if (ret) {
-			dev_err(smu->adev->dev, "[SetupDefaultDpmTable] failed to get fclk dpm levels!");
+	/* fclk dpm table setup */
+	dpm_table = &dpm_context->dpm_tables.fclk_table;
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_FCLK_BIT)) {
+		ret = smu_v11_0_set_single_dpm_table(smu,
+						     SMU_FCLK,
+						     dpm_table);
+		if (ret)
 			return ret;
-		}
+		dpm_table->is_fine_grained =
+			!driver_ppt->DpmDescriptor[PPCLK_FCLK].SnapToDiscrete;
 	} else {
-		single_dpm_table->count = 1;
-		single_dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.fclk / 100;
+		dpm_table->count = 1;
+		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.fclk / 100;
+		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
-	arcturus_init_single_dpm_state(&(single_dpm_table->dpm_state));
-
-	memcpy(smu_dpm->golden_dpm_context, dpm_table,
-	       sizeof(struct arcturus_dpm_table));
 
 	return 0;
 }
@@ -540,7 +411,7 @@ static int arcturus_append_powerplay_table(struct smu_context *smu)
 	index = get_index_into_master_table(atom_master_list_of_data_tables_v2_1,
 					   smc_dpm_info);
 
-	ret = smu_get_atom_data_table(smu, index, NULL, NULL, NULL,
+	ret = amdgpu_atombios_get_data_table(smu->adev, index, NULL, NULL, NULL,
 				      (uint8_t **)&smc_dpm_table);
 	if (ret)
 		return ret;
@@ -585,44 +456,61 @@ static int arcturus_run_btc(struct smu_context *smu)
 {
 	int ret = 0;
 
-	ret = smu_send_smc_msg(smu, SMU_MSG_RunAfllBtc, NULL);
+	ret = smu_cmn_send_smc_msg(smu, SMU_MSG_RunAfllBtc, NULL);
 	if (ret) {
 		dev_err(smu->adev->dev, "RunAfllBtc failed!\n");
 		return ret;
 	}
 
-	return smu_send_smc_msg(smu, SMU_MSG_RunDcBtc, NULL);
+	return smu_cmn_send_smc_msg(smu, SMU_MSG_RunDcBtc, NULL);
 }
 
 static int arcturus_populate_umd_state_clk(struct smu_context *smu)
 {
-	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
-	struct arcturus_dpm_table *dpm_table = NULL;
-	struct arcturus_single_dpm_table *gfx_table = NULL;
-	struct arcturus_single_dpm_table *mem_table = NULL;
+	struct smu_11_0_dpm_context *dpm_context =
+				smu->smu_dpm.dpm_context;
+	struct smu_11_0_dpm_table *gfx_table =
+				&dpm_context->dpm_tables.gfx_table;
+	struct smu_11_0_dpm_table *mem_table =
+				&dpm_context->dpm_tables.uclk_table;
+	struct smu_11_0_dpm_table *soc_table =
+				&dpm_context->dpm_tables.soc_table;
+	struct smu_umd_pstate_table *pstate_table =
+				&smu->pstate_table;
 
-	dpm_table = smu_dpm->dpm_context;
-	gfx_table = &(dpm_table->gfx_table);
-	mem_table = &(dpm_table->mem_table);
+	pstate_table->gfxclk_pstate.min = gfx_table->min;
+	pstate_table->gfxclk_pstate.peak = gfx_table->max;
 
-	smu->pstate_sclk = gfx_table->dpm_levels[0].value;
-	smu->pstate_mclk = mem_table->dpm_levels[0].value;
+	pstate_table->uclk_pstate.min = mem_table->min;
+	pstate_table->uclk_pstate.peak = mem_table->max;
+
+	pstate_table->socclk_pstate.min = soc_table->min;
+	pstate_table->socclk_pstate.peak = soc_table->max;
 
 	if (gfx_table->count > ARCTURUS_UMD_PSTATE_GFXCLK_LEVEL &&
-	    mem_table->count > ARCTURUS_UMD_PSTATE_MCLK_LEVEL) {
-		smu->pstate_sclk = gfx_table->dpm_levels[ARCTURUS_UMD_PSTATE_GFXCLK_LEVEL].value;
-		smu->pstate_mclk = mem_table->dpm_levels[ARCTURUS_UMD_PSTATE_MCLK_LEVEL].value;
+	    mem_table->count > ARCTURUS_UMD_PSTATE_MCLK_LEVEL &&
+	    soc_table->count > ARCTURUS_UMD_PSTATE_SOCCLK_LEVEL) {
+		pstate_table->gfxclk_pstate.standard =
+			gfx_table->dpm_levels[ARCTURUS_UMD_PSTATE_GFXCLK_LEVEL].value;
+		pstate_table->uclk_pstate.standard =
+			mem_table->dpm_levels[ARCTURUS_UMD_PSTATE_MCLK_LEVEL].value;
+		pstate_table->socclk_pstate.standard =
+			soc_table->dpm_levels[ARCTURUS_UMD_PSTATE_SOCCLK_LEVEL].value;
+	} else {
+		pstate_table->gfxclk_pstate.standard =
+			pstate_table->gfxclk_pstate.min;
+		pstate_table->uclk_pstate.standard =
+			pstate_table->uclk_pstate.min;
+		pstate_table->socclk_pstate.standard =
+			pstate_table->socclk_pstate.min;
 	}
-
-	smu->pstate_sclk = smu->pstate_sclk * 100;
-	smu->pstate_mclk = smu->pstate_mclk * 100;
 
 	return 0;
 }
 
 static int arcturus_get_clk_table(struct smu_context *smu,
 			struct pp_clock_levels_with_latency *clocks,
-			struct arcturus_single_dpm_table *dpm_table)
+			struct smu_11_0_dpm_table *dpm_table)
 {
 	int i, count;
 
@@ -644,280 +532,6 @@ static int arcturus_freqs_in_same_level(int32_t frequency1,
 	return (abs(frequency1 - frequency2) <= EPSILON);
 }
 
-static int arcturus_print_clk_levels(struct smu_context *smu,
-			enum smu_clk_type type, char *buf)
-{
-	int i, now, size = 0;
-	int ret = 0;
-	struct pp_clock_levels_with_latency clocks;
-	struct arcturus_single_dpm_table *single_dpm_table;
-	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
-	struct arcturus_dpm_table *dpm_table = NULL;
-
-	if (amdgpu_ras_intr_triggered())
-		return snprintf(buf, PAGE_SIZE, "unavailable\n");
-
-	dpm_table = smu_dpm->dpm_context;
-
-	switch (type) {
-	case SMU_SCLK:
-		ret = smu_get_current_clk_freq(smu, SMU_GFXCLK, &now);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get current gfx clk Failed!");
-			return ret;
-		}
-
-		single_dpm_table = &(dpm_table->gfx_table);
-		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get gfx clk levels Failed!");
-			return ret;
-		}
-
-		/*
-		 * For DPM disabled case, there will be only one clock level.
-		 * And it's safe to assume that is always the current clock.
-		 */
-		for (i = 0; i < clocks.num_levels; i++)
-			size += sprintf(buf + size, "%d: %uMhz %s\n", i,
-					clocks.data[i].clocks_in_khz / 1000,
-					(clocks.num_levels == 1) ? "*" :
-					(arcturus_freqs_in_same_level(
-					clocks.data[i].clocks_in_khz / 1000,
-					now / 100) ? "*" : ""));
-		break;
-
-	case SMU_MCLK:
-		ret = smu_get_current_clk_freq(smu, SMU_UCLK, &now);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get current mclk Failed!");
-			return ret;
-		}
-
-		single_dpm_table = &(dpm_table->mem_table);
-		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get memory clk levels Failed!");
-			return ret;
-		}
-
-		for (i = 0; i < clocks.num_levels; i++)
-			size += sprintf(buf + size, "%d: %uMhz %s\n",
-				i, clocks.data[i].clocks_in_khz / 1000,
-				(clocks.num_levels == 1) ? "*" :
-				(arcturus_freqs_in_same_level(
-				clocks.data[i].clocks_in_khz / 1000,
-				now / 100) ? "*" : ""));
-		break;
-
-	case SMU_SOCCLK:
-		ret = smu_get_current_clk_freq(smu, SMU_SOCCLK, &now);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get current socclk Failed!");
-			return ret;
-		}
-
-		single_dpm_table = &(dpm_table->soc_table);
-		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get socclk levels Failed!");
-			return ret;
-		}
-
-		for (i = 0; i < clocks.num_levels; i++)
-			size += sprintf(buf + size, "%d: %uMhz %s\n",
-				i, clocks.data[i].clocks_in_khz / 1000,
-				(clocks.num_levels == 1) ? "*" :
-				(arcturus_freqs_in_same_level(
-				clocks.data[i].clocks_in_khz / 1000,
-				now / 100) ? "*" : ""));
-		break;
-
-	case SMU_FCLK:
-		ret = smu_get_current_clk_freq(smu, SMU_FCLK, &now);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get current fclk Failed!");
-			return ret;
-		}
-
-		single_dpm_table = &(dpm_table->fclk_table);
-		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
-		if (ret) {
-			dev_err(smu->adev->dev, "Attempt to get fclk levels Failed!");
-			return ret;
-		}
-
-		for (i = 0; i < single_dpm_table->count; i++)
-			size += sprintf(buf + size, "%d: %uMhz %s\n",
-				i, single_dpm_table->dpm_levels[i].value,
-				(clocks.num_levels == 1) ? "*" :
-				(arcturus_freqs_in_same_level(
-				clocks.data[i].clocks_in_khz / 1000,
-				now / 100) ? "*" : ""));
-		break;
-
-	default:
-		break;
-	}
-
-	return size;
-}
-
-static int arcturus_upload_dpm_level(struct smu_context *smu, bool max,
-				     uint32_t feature_mask)
-{
-	struct arcturus_single_dpm_table *single_dpm_table;
-	struct arcturus_dpm_table *dpm_table =
-			smu->smu_dpm.dpm_context;
-	uint32_t freq;
-	int ret = 0;
-
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT) &&
-	    (feature_mask & FEATURE_DPM_GFXCLK_MASK)) {
-		single_dpm_table = &(dpm_table->gfx_table);
-		freq = max ? single_dpm_table->dpm_state.soft_max_level :
-			single_dpm_table->dpm_state.soft_min_level;
-		ret = smu_send_smc_msg_with_param(smu,
-			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
-			(PPCLK_GFXCLK << 16) | (freq & 0xffff),
-			NULL);
-		if (ret) {
-			dev_err(smu->adev->dev, "Failed to set soft %s gfxclk !\n",
-						max ? "max" : "min");
-			return ret;
-		}
-	}
-
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT) &&
-	    (feature_mask & FEATURE_DPM_UCLK_MASK)) {
-		single_dpm_table = &(dpm_table->mem_table);
-		freq = max ? single_dpm_table->dpm_state.soft_max_level :
-			single_dpm_table->dpm_state.soft_min_level;
-		ret = smu_send_smc_msg_with_param(smu,
-			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
-			(PPCLK_UCLK << 16) | (freq & 0xffff),
-			NULL);
-		if (ret) {
-			dev_err(smu->adev->dev, "Failed to set soft %s memclk !\n",
-						max ? "max" : "min");
-			return ret;
-		}
-	}
-
-	if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT) &&
-	    (feature_mask & FEATURE_DPM_SOCCLK_MASK)) {
-		single_dpm_table = &(dpm_table->soc_table);
-		freq = max ? single_dpm_table->dpm_state.soft_max_level :
-			single_dpm_table->dpm_state.soft_min_level;
-		ret = smu_send_smc_msg_with_param(smu,
-			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
-			(PPCLK_SOCCLK << 16) | (freq & 0xffff),
-			NULL);
-		if (ret) {
-			dev_err(smu->adev->dev, "Failed to set soft %s socclk !\n",
-						max ? "max" : "min");
-			return ret;
-		}
-	}
-
-	return ret;
-}
-
-static int arcturus_force_clk_levels(struct smu_context *smu,
-			enum smu_clk_type type, uint32_t mask)
-{
-	struct arcturus_dpm_table *dpm_table;
-	struct arcturus_single_dpm_table *single_dpm_table;
-	uint32_t soft_min_level, soft_max_level;
-	uint32_t smu_version;
-	int ret = 0;
-
-	ret = smu_get_smc_version(smu, NULL, &smu_version);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to get smu version!\n");
-		return ret;
-	}
-
-	if (smu_version >= 0x361200) {
-		dev_err(smu->adev->dev, "Forcing clock level is not supported with "
-		       "54.18 and onwards SMU firmwares\n");
-		return -EOPNOTSUPP;
-	}
-
-	soft_min_level = mask ? (ffs(mask) - 1) : 0;
-	soft_max_level = mask ? (fls(mask) - 1) : 0;
-
-	dpm_table = smu->smu_dpm.dpm_context;
-
-	switch (type) {
-	case SMU_SCLK:
-		single_dpm_table = &(dpm_table->gfx_table);
-
-		if (soft_max_level >= single_dpm_table->count) {
-			dev_err(smu->adev->dev, "Clock level specified %d is over max allowed %d\n",
-					soft_max_level, single_dpm_table->count - 1);
-			ret = -EINVAL;
-			break;
-		}
-
-		single_dpm_table->dpm_state.soft_min_level =
-			single_dpm_table->dpm_levels[soft_min_level].value;
-		single_dpm_table->dpm_state.soft_max_level =
-			single_dpm_table->dpm_levels[soft_max_level].value;
-
-		ret = arcturus_upload_dpm_level(smu, false, FEATURE_DPM_GFXCLK_MASK);
-		if (ret) {
-			dev_err(smu->adev->dev, "Failed to upload boot level to lowest!\n");
-			break;
-		}
-
-		ret = arcturus_upload_dpm_level(smu, true, FEATURE_DPM_GFXCLK_MASK);
-		if (ret)
-			dev_err(smu->adev->dev, "Failed to upload dpm max level to highest!\n");
-
-		break;
-
-	case SMU_MCLK:
-	case SMU_SOCCLK:
-	case SMU_FCLK:
-		/*
-		 * Should not arrive here since Arcturus does not
-		 * support mclk/socclk/fclk softmin/softmax settings
-		 */
-		ret = -EINVAL;
-		break;
-
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-static int arcturus_get_thermal_temperature_range(struct smu_context *smu,
-						struct smu_temperature_range *range)
-{
-	PPTable_t *pptable = smu->smu_table.driver_pptable;
-
-	if (!range)
-		return -EINVAL;
-
-	range->max = pptable->TedgeLimit *
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-	range->edge_emergency_max = (pptable->TedgeLimit + CTF_OFFSET_EDGE) *
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-	range->hotspot_crit_max = pptable->ThotspotLimit *
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-	range->hotspot_emergency_max = (pptable->ThotspotLimit + CTF_OFFSET_HOTSPOT) *
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-	range->mem_crit_max = pptable->TmemLimit *
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-	range->mem_emergency_max = (pptable->TmemLimit + CTF_OFFSET_HBM)*
-		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
-
-	return 0;
-}
-
 static int arcturus_get_smu_metrics_data(struct smu_context *smu,
 					 MetricsMember_t member,
 					 uint32_t *value)
@@ -930,7 +544,7 @@ static int arcturus_get_smu_metrics_data(struct smu_context *smu,
 
 	if (!smu_table->metrics_time ||
 	     time_after(jiffies, smu_table->metrics_time + msecs_to_jiffies(1))) {
-		ret = smu_update_table(smu,
+		ret = smu_cmn_update_table(smu,
 				       SMU_TABLE_SMU_METRICS,
 				       0,
 				       smu_table->metrics_table,
@@ -1027,6 +641,344 @@ static int arcturus_get_smu_metrics_data(struct smu_context *smu,
 	mutex_unlock(&smu->metrics_lock);
 
 	return ret;
+}
+
+static int arcturus_get_current_clk_freq_by_table(struct smu_context *smu,
+				       enum smu_clk_type clk_type,
+				       uint32_t *value)
+{
+	MetricsMember_t member_type;
+	int clk_id = 0;
+
+	if (!value)
+		return -EINVAL;
+
+	clk_id = smu_cmn_to_asic_specific_index(smu,
+						CMN2ASIC_MAPPING_CLK,
+						clk_type);
+	if (clk_id < 0)
+		return -EINVAL;
+
+	switch (clk_id) {
+	case PPCLK_GFXCLK:
+		/*
+		 * CurrClock[clk_id] can provide accurate
+		 *   output only when the dpm feature is enabled.
+		 * We can use Average_* for dpm disabled case.
+		 *   But this is available for gfxclk/uclk/socclk/vclk/dclk.
+		 */
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT))
+			member_type = METRICS_CURR_GFXCLK;
+		else
+			member_type = METRICS_AVERAGE_GFXCLK;
+		break;
+	case PPCLK_UCLK:
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT))
+			member_type = METRICS_CURR_UCLK;
+		else
+			member_type = METRICS_AVERAGE_UCLK;
+		break;
+	case PPCLK_SOCCLK:
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT))
+			member_type = METRICS_CURR_SOCCLK;
+		else
+			member_type = METRICS_AVERAGE_SOCCLK;
+		break;
+	case PPCLK_VCLK:
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT))
+			member_type = METRICS_CURR_VCLK;
+		else
+			member_type = METRICS_AVERAGE_VCLK;
+		break;
+	case PPCLK_DCLK:
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT))
+			member_type = METRICS_CURR_DCLK;
+		else
+			member_type = METRICS_AVERAGE_DCLK;
+		break;
+	case PPCLK_FCLK:
+		member_type = METRICS_CURR_FCLK;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return arcturus_get_smu_metrics_data(smu,
+					     member_type,
+					     value);
+}
+
+static int arcturus_print_clk_levels(struct smu_context *smu,
+			enum smu_clk_type type, char *buf)
+{
+	int i, now, size = 0;
+	int ret = 0;
+	struct pp_clock_levels_with_latency clocks;
+	struct smu_11_0_dpm_table *single_dpm_table;
+	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
+	struct smu_11_0_dpm_context *dpm_context = NULL;
+
+	if (amdgpu_ras_intr_triggered())
+		return snprintf(buf, PAGE_SIZE, "unavailable\n");
+
+	dpm_context = smu_dpm->dpm_context;
+
+	switch (type) {
+	case SMU_SCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_GFXCLK, &now);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get current gfx clk Failed!");
+			return ret;
+		}
+
+		single_dpm_table = &(dpm_context->dpm_tables.gfx_table);
+		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get gfx clk levels Failed!");
+			return ret;
+		}
+
+		/*
+		 * For DPM disabled case, there will be only one clock level.
+		 * And it's safe to assume that is always the current clock.
+		 */
+		for (i = 0; i < clocks.num_levels; i++)
+			size += sprintf(buf + size, "%d: %uMhz %s\n", i,
+					clocks.data[i].clocks_in_khz / 1000,
+					(clocks.num_levels == 1) ? "*" :
+					(arcturus_freqs_in_same_level(
+					clocks.data[i].clocks_in_khz / 1000,
+					now) ? "*" : ""));
+		break;
+
+	case SMU_MCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_UCLK, &now);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get current mclk Failed!");
+			return ret;
+		}
+
+		single_dpm_table = &(dpm_context->dpm_tables.uclk_table);
+		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get memory clk levels Failed!");
+			return ret;
+		}
+
+		for (i = 0; i < clocks.num_levels; i++)
+			size += sprintf(buf + size, "%d: %uMhz %s\n",
+				i, clocks.data[i].clocks_in_khz / 1000,
+				(clocks.num_levels == 1) ? "*" :
+				(arcturus_freqs_in_same_level(
+				clocks.data[i].clocks_in_khz / 1000,
+				now) ? "*" : ""));
+		break;
+
+	case SMU_SOCCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_SOCCLK, &now);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get current socclk Failed!");
+			return ret;
+		}
+
+		single_dpm_table = &(dpm_context->dpm_tables.soc_table);
+		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get socclk levels Failed!");
+			return ret;
+		}
+
+		for (i = 0; i < clocks.num_levels; i++)
+			size += sprintf(buf + size, "%d: %uMhz %s\n",
+				i, clocks.data[i].clocks_in_khz / 1000,
+				(clocks.num_levels == 1) ? "*" :
+				(arcturus_freqs_in_same_level(
+				clocks.data[i].clocks_in_khz / 1000,
+				now) ? "*" : ""));
+		break;
+
+	case SMU_FCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_FCLK, &now);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get current fclk Failed!");
+			return ret;
+		}
+
+		single_dpm_table = &(dpm_context->dpm_tables.fclk_table);
+		ret = arcturus_get_clk_table(smu, &clocks, single_dpm_table);
+		if (ret) {
+			dev_err(smu->adev->dev, "Attempt to get fclk levels Failed!");
+			return ret;
+		}
+
+		for (i = 0; i < single_dpm_table->count; i++)
+			size += sprintf(buf + size, "%d: %uMhz %s\n",
+				i, single_dpm_table->dpm_levels[i].value,
+				(clocks.num_levels == 1) ? "*" :
+				(arcturus_freqs_in_same_level(
+				clocks.data[i].clocks_in_khz / 1000,
+				now) ? "*" : ""));
+		break;
+
+	default:
+		break;
+	}
+
+	return size;
+}
+
+static int arcturus_upload_dpm_level(struct smu_context *smu,
+				     bool max,
+				     uint32_t feature_mask,
+				     uint32_t level)
+{
+	struct smu_11_0_dpm_context *dpm_context =
+			smu->smu_dpm.dpm_context;
+	uint32_t freq;
+	int ret = 0;
+
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT) &&
+	    (feature_mask & FEATURE_DPM_GFXCLK_MASK)) {
+		freq = dpm_context->dpm_tables.gfx_table.dpm_levels[level].value;
+		ret = smu_cmn_send_smc_msg_with_param(smu,
+			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
+			(PPCLK_GFXCLK << 16) | (freq & 0xffff),
+			NULL);
+		if (ret) {
+			dev_err(smu->adev->dev, "Failed to set soft %s gfxclk !\n",
+						max ? "max" : "min");
+			return ret;
+		}
+	}
+
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT) &&
+	    (feature_mask & FEATURE_DPM_UCLK_MASK)) {
+		freq = dpm_context->dpm_tables.uclk_table.dpm_levels[level].value;
+		ret = smu_cmn_send_smc_msg_with_param(smu,
+			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
+			(PPCLK_UCLK << 16) | (freq & 0xffff),
+			NULL);
+		if (ret) {
+			dev_err(smu->adev->dev, "Failed to set soft %s memclk !\n",
+						max ? "max" : "min");
+			return ret;
+		}
+	}
+
+	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT) &&
+	    (feature_mask & FEATURE_DPM_SOCCLK_MASK)) {
+		freq = dpm_context->dpm_tables.soc_table.dpm_levels[level].value;
+		ret = smu_cmn_send_smc_msg_with_param(smu,
+			(max ? SMU_MSG_SetSoftMaxByFreq : SMU_MSG_SetSoftMinByFreq),
+			(PPCLK_SOCCLK << 16) | (freq & 0xffff),
+			NULL);
+		if (ret) {
+			dev_err(smu->adev->dev, "Failed to set soft %s socclk !\n",
+						max ? "max" : "min");
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
+static int arcturus_force_clk_levels(struct smu_context *smu,
+			enum smu_clk_type type, uint32_t mask)
+{
+	struct smu_11_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
+	struct smu_11_0_dpm_table *single_dpm_table = NULL;
+	uint32_t soft_min_level, soft_max_level;
+	uint32_t smu_version;
+	int ret = 0;
+
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
+	if (ret) {
+		dev_err(smu->adev->dev, "Failed to get smu version!\n");
+		return ret;
+	}
+
+	if (smu_version >= 0x361200) {
+		dev_err(smu->adev->dev, "Forcing clock level is not supported with "
+		       "54.18 and onwards SMU firmwares\n");
+		return -EOPNOTSUPP;
+	}
+
+	soft_min_level = mask ? (ffs(mask) - 1) : 0;
+	soft_max_level = mask ? (fls(mask) - 1) : 0;
+
+	switch (type) {
+	case SMU_SCLK:
+		single_dpm_table = &(dpm_context->dpm_tables.gfx_table);
+		if (soft_max_level >= single_dpm_table->count) {
+			dev_err(smu->adev->dev, "Clock level specified %d is over max allowed %d\n",
+					soft_max_level, single_dpm_table->count - 1);
+			ret = -EINVAL;
+			break;
+		}
+
+		ret = arcturus_upload_dpm_level(smu,
+						false,
+						FEATURE_DPM_GFXCLK_MASK,
+						soft_min_level);
+		if (ret) {
+			dev_err(smu->adev->dev, "Failed to upload boot level to lowest!\n");
+			break;
+		}
+
+		ret = arcturus_upload_dpm_level(smu,
+						true,
+						FEATURE_DPM_GFXCLK_MASK,
+						soft_max_level);
+		if (ret)
+			dev_err(smu->adev->dev, "Failed to upload dpm max level to highest!\n");
+
+		break;
+
+	case SMU_MCLK:
+	case SMU_SOCCLK:
+	case SMU_FCLK:
+		/*
+		 * Should not arrive here since Arcturus does not
+		 * support mclk/socclk/fclk softmin/softmax settings
+		 */
+		ret = -EINVAL;
+		break;
+
+	default:
+		break;
+	}
+
+	return ret;
+}
+
+static int arcturus_get_thermal_temperature_range(struct smu_context *smu,
+						struct smu_temperature_range *range)
+{
+	struct smu_table_context *table_context = &smu->smu_table;
+	struct smu_11_0_powerplay_table *powerplay_table =
+				table_context->power_play_table;
+	PPTable_t *pptable = smu->smu_table.driver_pptable;
+
+	if (!range)
+		return -EINVAL;
+
+	memcpy(range, &smu11_thermal_policy[0], sizeof(struct smu_temperature_range));
+
+	range->max = pptable->TedgeLimit *
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->edge_emergency_max = (pptable->TedgeLimit + CTF_OFFSET_EDGE) *
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->hotspot_crit_max = pptable->ThotspotLimit *
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->hotspot_emergency_max = (pptable->ThotspotLimit + CTF_OFFSET_HOTSPOT) *
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->mem_crit_max = pptable->TmemLimit *
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->mem_emergency_max = (pptable->TmemLimit + CTF_OFFSET_MEM)*
+		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+	range->software_shutdown_temp = powerplay_table->software_shutdown_temp;
+
+	return 0;
 }
 
 static int arcturus_get_current_activity_percent(struct smu_context *smu,
@@ -1138,8 +1090,24 @@ static int arcturus_read_sensor(struct smu_context *smu,
 						(uint32_t *)data);
 		*size = 4;
 		break;
+	case AMDGPU_PP_SENSOR_GFX_MCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_UCLK, (uint32_t *)data);
+		/* the output clock frequency in 10K unit */
+		*(uint32_t *)data *= 100;
+		*size = 4;
+		break;
+	case AMDGPU_PP_SENSOR_GFX_SCLK:
+		ret = arcturus_get_current_clk_freq_by_table(smu, SMU_GFXCLK, (uint32_t *)data);
+		*(uint32_t *)data *= 100;
+		*size = 4;
+		break;
+	case AMDGPU_PP_SENSOR_VDDGFX:
+		ret = smu_v11_0_get_gfx_vdd(smu, (uint32_t *)data);
+		*size = 4;
+		break;
 	default:
-		ret = smu_v11_0_read_sensor(smu, sensor, data, size);
+		ret = -EOPNOTSUPP;
+		break;
 	}
 	mutex_unlock(&smu->sensor_lock);
 
@@ -1175,238 +1143,6 @@ static int arcturus_get_fan_speed_percent(struct smu_context *smu,
 	*speed = percent > 100 ? 100 : percent;
 
 	return ret;
-}
-
-static int arcturus_get_current_clk_freq_by_table(struct smu_context *smu,
-				       enum smu_clk_type clk_type,
-				       uint32_t *value)
-{
-	MetricsMember_t member_type;
-	int clk_id = 0;
-
-	if (!value)
-		return -EINVAL;
-
-	clk_id = smu_clk_get_index(smu, clk_type);
-	if (clk_id < 0)
-		return -EINVAL;
-
-	switch (clk_id) {
-	case PPCLK_GFXCLK:
-		/*
-		 * CurrClock[clk_id] can provide accurate
-		 *   output only when the dpm feature is enabled.
-		 * We can use Average_* for dpm disabled case.
-		 *   But this is available for gfxclk/uclk/socclk/vclk/dclk.
-		 */
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT))
-			member_type = METRICS_CURR_GFXCLK;
-		else
-			member_type = METRICS_AVERAGE_GFXCLK;
-		break;
-	case PPCLK_UCLK:
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT))
-			member_type = METRICS_CURR_UCLK;
-		else
-			member_type = METRICS_AVERAGE_UCLK;
-		break;
-	case PPCLK_SOCCLK:
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT))
-			member_type = METRICS_CURR_SOCCLK;
-		else
-			member_type = METRICS_AVERAGE_SOCCLK;
-		break;
-	case PPCLK_VCLK:
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT))
-			member_type = METRICS_CURR_VCLK;
-		else
-			member_type = METRICS_AVERAGE_VCLK;
-		break;
-	case PPCLK_DCLK:
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT))
-			member_type = METRICS_CURR_DCLK;
-		else
-			member_type = METRICS_AVERAGE_DCLK;
-		break;
-	case PPCLK_FCLK:
-		member_type = METRICS_CURR_FCLK;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return arcturus_get_smu_metrics_data(smu,
-					     member_type,
-					     value);
-}
-
-static uint32_t arcturus_find_lowest_dpm_level(struct arcturus_single_dpm_table *table)
-{
-	uint32_t i;
-
-	for (i = 0; i < table->count; i++) {
-		if (table->dpm_levels[i].enabled)
-			break;
-	}
-	if (i >= table->count) {
-		i = 0;
-		table->dpm_levels[i].enabled = true;
-	}
-
-	return i;
-}
-
-static uint32_t arcturus_find_highest_dpm_level(struct smu_context *smu,
-						struct arcturus_single_dpm_table *table)
-{
-	int i = 0;
-
-	if (table->count <= 0) {
-		dev_err(smu->adev->dev, "[%s] DPM Table has no entry!", __func__);
-		return 0;
-	}
-	if (table->count > MAX_DPM_NUMBER) {
-		dev_err(smu->adev->dev, "[%s] DPM Table has too many entries!", __func__);
-		return MAX_DPM_NUMBER - 1;
-	}
-
-	for (i = table->count - 1; i >= 0; i--) {
-		if (table->dpm_levels[i].enabled)
-			break;
-	}
-	if (i < 0) {
-		i = 0;
-		table->dpm_levels[i].enabled = true;
-	}
-
-	return i;
-}
-
-
-
-static int arcturus_force_dpm_limit_value(struct smu_context *smu, bool highest)
-{
-	struct arcturus_dpm_table *dpm_table =
-		(struct arcturus_dpm_table *)smu->smu_dpm.dpm_context;
-	struct amdgpu_hive_info *hive = amdgpu_get_xgmi_hive(smu->adev, 0);
-	uint32_t soft_level;
-	int ret = 0;
-
-	/* gfxclk */
-	if (highest)
-		soft_level = arcturus_find_highest_dpm_level(smu, &(dpm_table->gfx_table));
-	else
-		soft_level = arcturus_find_lowest_dpm_level(&(dpm_table->gfx_table));
-
-	dpm_table->gfx_table.dpm_state.soft_min_level =
-		dpm_table->gfx_table.dpm_state.soft_max_level =
-		dpm_table->gfx_table.dpm_levels[soft_level].value;
-
-	ret = arcturus_upload_dpm_level(smu, false, FEATURE_DPM_GFXCLK_MASK);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to upload boot level to %s!\n",
-				highest ? "highest" : "lowest");
-		return ret;
-	}
-
-	ret = arcturus_upload_dpm_level(smu, true, FEATURE_DPM_GFXCLK_MASK);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to upload dpm max level to %s!\n!",
-				highest ? "highest" : "lowest");
-		return ret;
-	}
-
-	if (hive)
-		/*
-		 * Force XGMI Pstate to highest or lowest
-		 * TODO: revise this when xgmi dpm is functional
-		 */
-		ret = smu_v11_0_set_xgmi_pstate(smu, highest ? 1 : 0);
-
-	return ret;
-}
-
-static int arcturus_unforce_dpm_levels(struct smu_context *smu)
-{
-	struct arcturus_dpm_table *dpm_table =
-		(struct arcturus_dpm_table *)smu->smu_dpm.dpm_context;
-	struct amdgpu_hive_info *hive = amdgpu_get_xgmi_hive(smu->adev, 0);
-	uint32_t soft_min_level, soft_max_level;
-	int ret = 0;
-
-	/* gfxclk */
-	soft_min_level = arcturus_find_lowest_dpm_level(&(dpm_table->gfx_table));
-	soft_max_level = arcturus_find_highest_dpm_level(smu, &(dpm_table->gfx_table));
-	dpm_table->gfx_table.dpm_state.soft_min_level =
-		dpm_table->gfx_table.dpm_levels[soft_min_level].value;
-	dpm_table->gfx_table.dpm_state.soft_max_level =
-		dpm_table->gfx_table.dpm_levels[soft_max_level].value;
-
-	ret = arcturus_upload_dpm_level(smu, false, FEATURE_DPM_GFXCLK_MASK);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to upload DPM Bootup Levels!");
-		return ret;
-	}
-
-	ret = arcturus_upload_dpm_level(smu, true, FEATURE_DPM_GFXCLK_MASK);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to upload DPM Max Levels!");
-		return ret;
-	}
-
-	if (hive)
-		/*
-		 * Reset XGMI Pstate back to default
-		 * TODO: revise this when xgmi dpm is functional
-		 */
-		ret = smu_v11_0_set_xgmi_pstate(smu, 0);
-
-	return ret;
-}
-
-static int
-arcturus_get_profiling_clk_mask(struct smu_context *smu,
-				enum amd_dpm_forced_level level,
-				uint32_t *sclk_mask,
-				uint32_t *mclk_mask,
-				uint32_t *soc_mask)
-{
-	struct arcturus_dpm_table *dpm_table =
-		(struct arcturus_dpm_table *)smu->smu_dpm.dpm_context;
-	struct arcturus_single_dpm_table *gfx_dpm_table;
-	struct arcturus_single_dpm_table *mem_dpm_table;
-	struct arcturus_single_dpm_table *soc_dpm_table;
-
-	if (!smu->smu_dpm.dpm_context)
-		return -EINVAL;
-
-	gfx_dpm_table = &dpm_table->gfx_table;
-	mem_dpm_table = &dpm_table->mem_table;
-	soc_dpm_table = &dpm_table->soc_table;
-
-	*sclk_mask = 0;
-	*mclk_mask = 0;
-	*soc_mask  = 0;
-
-	if (gfx_dpm_table->count > ARCTURUS_UMD_PSTATE_GFXCLK_LEVEL &&
-	    mem_dpm_table->count > ARCTURUS_UMD_PSTATE_MCLK_LEVEL &&
-	    soc_dpm_table->count > ARCTURUS_UMD_PSTATE_SOCCLK_LEVEL) {
-		*sclk_mask = ARCTURUS_UMD_PSTATE_GFXCLK_LEVEL;
-		*mclk_mask = ARCTURUS_UMD_PSTATE_MCLK_LEVEL;
-		*soc_mask  = ARCTURUS_UMD_PSTATE_SOCCLK_LEVEL;
-	}
-
-	if (level == AMD_DPM_FORCED_LEVEL_PROFILE_MIN_SCLK) {
-		*sclk_mask = 0;
-	} else if (level == AMD_DPM_FORCED_LEVEL_PROFILE_MIN_MCLK) {
-		*mclk_mask = 0;
-	} else if (level == AMD_DPM_FORCED_LEVEL_PROFILE_PEAK) {
-		*sclk_mask = gfx_dpm_table->count - 1;
-		*mclk_mask = mem_dpm_table->count - 1;
-		*soc_mask  = soc_dpm_table->count - 1;
-	}
-
-	return 0;
 }
 
 static int arcturus_get_power_limit(struct smu_context *smu)
@@ -1472,7 +1208,7 @@ static int arcturus_get_power_profile_mode(struct smu_context *smu,
 	if (!buf)
 		return -EINVAL;
 
-	result = smu_get_smc_version(smu, NULL, &smu_version);
+	result = smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (result)
 		return result;
 
@@ -1489,12 +1225,14 @@ static int arcturus_get_power_profile_mode(struct smu_context *smu,
 		 * Conv PP_SMC_POWER_PROFILE* to WORKLOAD_PPLIB_*_BIT
 		 * Not all profile modes are supported on arcturus.
 		 */
-		workload_type = smu_workload_get_type(smu, i);
+		workload_type = smu_cmn_to_asic_specific_index(smu,
+							       CMN2ASIC_MAPPING_WORKLOAD,
+							       i);
 		if (workload_type < 0)
 			continue;
 
 		if (smu_version >= 0x360d00) {
-			result = smu_update_table(smu,
+			result = smu_cmn_update_table(smu,
 						  SMU_TABLE_ACTIVITY_MONITOR_COEFF,
 						  workload_type,
 						  (void *)(&activity_monitor),
@@ -1557,13 +1295,13 @@ static int arcturus_set_power_profile_mode(struct smu_context *smu,
 		return -EINVAL;
 	}
 
-	ret = smu_get_smc_version(smu, NULL, &smu_version);
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (ret)
 		return ret;
 
 	if ((profile_mode == PP_SMC_POWER_PROFILE_CUSTOM) &&
 	     (smu_version >=0x360d00)) {
-		ret = smu_update_table(smu,
+		ret = smu_cmn_update_table(smu,
 				       SMU_TABLE_ACTIVITY_MONITOR_COEFF,
 				       WORKLOAD_PPLIB_CUSTOM_BIT,
 				       (void *)(&activity_monitor),
@@ -1598,7 +1336,7 @@ static int arcturus_set_power_profile_mode(struct smu_context *smu,
 			break;
 		}
 
-		ret = smu_update_table(smu,
+		ret = smu_cmn_update_table(smu,
 				       SMU_TABLE_ACTIVITY_MONITOR_COEFF,
 				       WORKLOAD_PPLIB_CUSTOM_BIT,
 				       (void *)(&activity_monitor),
@@ -1613,13 +1351,15 @@ static int arcturus_set_power_profile_mode(struct smu_context *smu,
 	 * Conv PP_SMC_POWER_PROFILE* to WORKLOAD_PPLIB_*_BIT
 	 * Not all profile modes are supported on arcturus.
 	 */
-	workload_type = smu_workload_get_type(smu, profile_mode);
+	workload_type = smu_cmn_to_asic_specific_index(smu,
+						       CMN2ASIC_MAPPING_WORKLOAD,
+						       profile_mode);
 	if (workload_type < 0) {
 		dev_err(smu->adev->dev, "Unsupported power profile mode %d on arcturus\n", profile_mode);
 		return -EINVAL;
 	}
 
-	ret = smu_send_smc_msg_with_param(smu,
+	ret = smu_cmn_send_smc_msg_with_param(smu,
 					  SMU_MSG_SetWorkloadMask,
 					  1 << workload_type,
 					  NULL);
@@ -1639,7 +1379,7 @@ static int arcturus_set_performance_level(struct smu_context *smu,
 	uint32_t smu_version;
 	int ret;
 
-	ret = smu_get_smc_version(smu, NULL, &smu_version);
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (ret) {
 		dev_err(smu->adev->dev, "Failed to get smu version!\n");
 		return ret;
@@ -2101,7 +1841,7 @@ static bool arcturus_is_dpm_running(struct smu_context *smu)
 	int ret = 0;
 	uint32_t feature_mask[2];
 	unsigned long feature_enabled;
-	ret = smu_feature_get_enabled_mask(smu, feature_mask, 2);
+	ret = smu_cmn_get_enabled_mask(smu, feature_mask, 2);
 	feature_enabled = (unsigned long)((uint64_t)feature_mask[0] |
 			   ((uint64_t)feature_mask[1] << 32));
 	return !!(feature_enabled & SMC_DPM_FEATURE);
@@ -2114,8 +1854,8 @@ static int arcturus_dpm_set_vcn_enable(struct smu_context *smu, bool enable)
 	int ret = 0;
 
 	if (enable) {
-		if (!smu_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT)) {
-			ret = smu_feature_set_enabled(smu, SMU_FEATURE_VCN_PG_BIT, 1);
+		if (!smu_cmn_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT)) {
+			ret = smu_cmn_feature_set_enabled(smu, SMU_FEATURE_VCN_PG_BIT, 1);
 			if (ret) {
 				dev_err(smu->adev->dev, "[EnableVCNDPM] failed!\n");
 				return ret;
@@ -2123,8 +1863,8 @@ static int arcturus_dpm_set_vcn_enable(struct smu_context *smu, bool enable)
 		}
 		power_gate->vcn_gated = false;
 	} else {
-		if (smu_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT)) {
-			ret = smu_feature_set_enabled(smu, SMU_FEATURE_VCN_PG_BIT, 0);
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_VCN_PG_BIT)) {
+			ret = smu_cmn_feature_set_enabled(smu, SMU_FEATURE_VCN_PG_BIT, 0);
 			if (ret) {
 				dev_err(smu->adev->dev, "[DisableVCNDPM] failed!\n");
 				return ret;
@@ -2136,14 +1876,11 @@ static int arcturus_dpm_set_vcn_enable(struct smu_context *smu, bool enable)
 	return ret;
 }
 
-
-static void arcturus_fill_eeprom_i2c_req(SwI2cRequest_t  *req, bool write,
+static void arcturus_fill_i2c_req(SwI2cRequest_t  *req, bool write,
 				  uint8_t address, uint32_t numbytes,
 				  uint8_t *data)
 {
 	int i;
-
-	BUG_ON(numbytes > MAX_SW_I2C_COMMANDS);
 
 	req->I2CcontrollerPort = 0;
 	req->I2CSpeed = 2;
@@ -2171,7 +1908,7 @@ static void arcturus_fill_eeprom_i2c_req(SwI2cRequest_t  *req, bool write,
 	}
 }
 
-static int arcturus_i2c_eeprom_read_data(struct i2c_adapter *control,
+static int arcturus_i2c_read_data(struct i2c_adapter *control,
 					       uint8_t address,
 					       uint8_t *data,
 					       uint32_t numbytes)
@@ -2182,12 +1919,18 @@ static int arcturus_i2c_eeprom_read_data(struct i2c_adapter *control,
 	struct smu_table_context *smu_table = &adev->smu.smu_table;
 	struct smu_table *table = &smu_table->driver_table;
 
+	if (numbytes > MAX_SW_I2C_COMMANDS) {
+		dev_err(adev->dev, "numbytes requested %d is over max allowed %d\n",
+			numbytes, MAX_SW_I2C_COMMANDS);
+		return -EINVAL;
+	}
+
 	memset(&req, 0, sizeof(req));
-	arcturus_fill_eeprom_i2c_req(&req, false, address, numbytes, data);
+	arcturus_fill_i2c_req(&req, false, address, numbytes, data);
 
 	mutex_lock(&adev->smu.mutex);
 	/* Now read data starting with that address */
-	ret = smu_update_table(&adev->smu, SMU_TABLE_I2C_COMMANDS, 0, &req,
+	ret = smu_cmn_update_table(&adev->smu, SMU_TABLE_I2C_COMMANDS, 0, &req,
 					true);
 	mutex_unlock(&adev->smu.mutex);
 
@@ -2198,18 +1941,18 @@ static int arcturus_i2c_eeprom_read_data(struct i2c_adapter *control,
 		for (i = 0; i < numbytes; i++)
 			data[i] = res->SwI2cCmds[i].Data;
 
-		dev_dbg(adev->dev, "arcturus_i2c_eeprom_read_data, address = %x, bytes = %d, data :",
+		dev_dbg(adev->dev, "arcturus_i2c_read_data, address = %x, bytes = %d, data :",
 				  (uint16_t)address, numbytes);
 
 		print_hex_dump(KERN_DEBUG, "data: ", DUMP_PREFIX_NONE,
 			       8, 1, data, numbytes, false);
 	} else
-		dev_err(adev->dev, "arcturus_i2c_eeprom_read_data - error occurred :%x", ret);
+		dev_err(adev->dev, "arcturus_i2c_read_data - error occurred :%x", ret);
 
 	return ret;
 }
 
-static int arcturus_i2c_eeprom_write_data(struct i2c_adapter *control,
+static int arcturus_i2c_write_data(struct i2c_adapter *control,
 						uint8_t address,
 						uint8_t *data,
 						uint32_t numbytes)
@@ -2218,11 +1961,17 @@ static int arcturus_i2c_eeprom_write_data(struct i2c_adapter *control,
 	SwI2cRequest_t req;
 	struct amdgpu_device *adev = to_amdgpu_device(control);
 
+	if (numbytes > MAX_SW_I2C_COMMANDS) {
+		dev_err(adev->dev, "numbytes requested %d is over max allowed %d\n",
+			numbytes, MAX_SW_I2C_COMMANDS);
+		return -EINVAL;
+	}
+
 	memset(&req, 0, sizeof(req));
-	arcturus_fill_eeprom_i2c_req(&req, true, address, numbytes, data);
+	arcturus_fill_i2c_req(&req, true, address, numbytes, data);
 
 	mutex_lock(&adev->smu.mutex);
-	ret = smu_update_table(&adev->smu, SMU_TABLE_I2C_COMMANDS, 0, &req, true);
+	ret = smu_cmn_update_table(&adev->smu, SMU_TABLE_I2C_COMMANDS, 0, &req, true);
 	mutex_unlock(&adev->smu.mutex);
 
 	if (!ret) {
@@ -2245,7 +1994,7 @@ static int arcturus_i2c_eeprom_write_data(struct i2c_adapter *control,
 	return ret;
 }
 
-static int arcturus_i2c_eeprom_i2c_xfer(struct i2c_adapter *i2c_adap,
+static int arcturus_i2c_xfer(struct i2c_adapter *i2c_adap,
 			      struct i2c_msg *msgs, int num)
 {
 	uint32_t  i, j, ret, data_size, data_chunk_size, next_eeprom_addr = 0;
@@ -2268,18 +2017,18 @@ static int arcturus_i2c_eeprom_i2c_xfer(struct i2c_adapter *i2c_adap,
 			data_chunk[1] = (next_eeprom_addr & 0xff);
 
 			if (msgs[i].flags & I2C_M_RD) {
-				ret = arcturus_i2c_eeprom_read_data(i2c_adap,
-								(uint8_t)msgs[i].addr,
-								data_chunk, MAX_SW_I2C_COMMANDS);
+				ret = arcturus_i2c_read_data(i2c_adap,
+							     (uint8_t)msgs[i].addr,
+							     data_chunk, MAX_SW_I2C_COMMANDS);
 
 				memcpy(data_ptr, data_chunk + 2, data_chunk_size);
 			} else {
 
 				memcpy(data_chunk + 2, data_ptr, data_chunk_size);
 
-				ret = arcturus_i2c_eeprom_write_data(i2c_adap,
-								 (uint8_t)msgs[i].addr,
-								 data_chunk, MAX_SW_I2C_COMMANDS);
+				ret = arcturus_i2c_write_data(i2c_adap,
+							      (uint8_t)msgs[i].addr,
+							      data_chunk, MAX_SW_I2C_COMMANDS);
 			}
 
 			if (ret) {
@@ -2296,17 +2045,17 @@ static int arcturus_i2c_eeprom_i2c_xfer(struct i2c_adapter *i2c_adap,
 			data_chunk[1] = (next_eeprom_addr & 0xff);
 
 			if (msgs[i].flags & I2C_M_RD) {
-				ret = arcturus_i2c_eeprom_read_data(i2c_adap,
-								(uint8_t)msgs[i].addr,
-								data_chunk, (data_size % data_chunk_size) + 2);
+				ret = arcturus_i2c_read_data(i2c_adap,
+							     (uint8_t)msgs[i].addr,
+							     data_chunk, (data_size % data_chunk_size) + 2);
 
 				memcpy(data_ptr, data_chunk + 2, data_size % data_chunk_size);
 			} else {
 				memcpy(data_chunk + 2, data_ptr, data_size % data_chunk_size);
 
-				ret = arcturus_i2c_eeprom_write_data(i2c_adap,
-								 (uint8_t)msgs[i].addr,
-								 data_chunk, (data_size % data_chunk_size) + 2);
+				ret = arcturus_i2c_write_data(i2c_adap,
+							      (uint8_t)msgs[i].addr,
+							      data_chunk, (data_size % data_chunk_size) + 2);
 			}
 
 			if (ret) {
@@ -2320,15 +2069,15 @@ fail:
 	return num;
 }
 
-static u32 arcturus_i2c_eeprom_i2c_func(struct i2c_adapter *adap)
+static u32 arcturus_i2c_func(struct i2c_adapter *adap)
 {
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
 
-static const struct i2c_algorithm arcturus_i2c_eeprom_i2c_algo = {
-	.master_xfer = arcturus_i2c_eeprom_i2c_xfer,
-	.functionality = arcturus_i2c_eeprom_i2c_func,
+static const struct i2c_algorithm arcturus_i2c_algo = {
+	.master_xfer = arcturus_i2c_xfer,
+	.functionality = arcturus_i2c_func,
 };
 
 static bool arcturus_i2c_adapter_is_added(struct i2c_adapter *control)
@@ -2338,7 +2087,7 @@ static bool arcturus_i2c_adapter_is_added(struct i2c_adapter *control)
 	return control->dev.parent == &adev->pdev->dev;
 }
 
-static int arcturus_i2c_eeprom_control_init(struct smu_context *smu, struct i2c_adapter *control)
+static int arcturus_i2c_control_init(struct smu_context *smu, struct i2c_adapter *control)
 {
 	struct amdgpu_device *adev = to_amdgpu_device(control);
 	int res;
@@ -2350,8 +2099,8 @@ static int arcturus_i2c_eeprom_control_init(struct smu_context *smu, struct i2c_
 	control->owner = THIS_MODULE;
 	control->class = I2C_CLASS_SPD;
 	control->dev.parent = &adev->pdev->dev;
-	control->algo = &arcturus_i2c_eeprom_i2c_algo;
-	snprintf(control->name, sizeof(control->name), "AMDGPU EEPROM");
+	control->algo = &arcturus_i2c_algo;
+	snprintf(control->name, sizeof(control->name), "AMDGPU SMU");
 
 	res = i2c_add_adapter(control);
 	if (res)
@@ -2360,7 +2109,7 @@ static int arcturus_i2c_eeprom_control_init(struct smu_context *smu, struct i2c_
 	return res;
 }
 
-static void arcturus_i2c_eeprom_control_fini(struct smu_context *smu, struct i2c_adapter *control)
+static void arcturus_i2c_control_fini(struct smu_context *smu, struct i2c_adapter *control)
 {
 	if (!arcturus_i2c_adapter_is_added(control))
 		return;
@@ -2374,7 +2123,7 @@ static void arcturus_get_unique_id(struct smu_context *smu)
 	uint32_t top32 = 0, bottom32 = 0, smu_version;
 	uint64_t id;
 
-	if (smu_get_smc_version(smu, NULL, &smu_version)) {
+	if (smu_cmn_get_smc_version(smu, NULL, &smu_version)) {
 		dev_warn(adev->dev, "Failed to get smu version, cannot get unique_id or serial_number\n");
 		return;
 	}
@@ -2386,8 +2135,8 @@ static void arcturus_get_unique_id(struct smu_context *smu)
 	}
 
 	/* Get the SN to turn into a Unique ID */
-	smu_send_smc_msg(smu, SMU_MSG_ReadSerialNumTop32, &top32);
-	smu_send_smc_msg(smu, SMU_MSG_ReadSerialNumBottom32, &bottom32);
+	smu_cmn_send_smc_msg(smu, SMU_MSG_ReadSerialNumTop32, &top32);
+	smu_cmn_send_smc_msg(smu, SMU_MSG_ReadSerialNumBottom32, &bottom32);
 
 	id = ((uint64_t)bottom32 << 32) | top32;
 	adev->unique_id = id;
@@ -2415,7 +2164,7 @@ static int arcturus_set_df_cstate(struct smu_context *smu,
 	uint32_t smu_version;
 	int ret;
 
-	ret = smu_get_smc_version(smu, NULL, &smu_version);
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (ret) {
 		dev_err(smu->adev->dev, "Failed to get smu version!\n");
 		return ret;
@@ -2427,7 +2176,7 @@ static int arcturus_set_df_cstate(struct smu_context *smu,
 		return -EINVAL;
 	}
 
-	return smu_send_smc_msg_with_param(smu, SMU_MSG_DFCstateControl, state, NULL);
+	return smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_DFCstateControl, state, NULL);
 }
 
 static int arcturus_allow_xgmi_power_down(struct smu_context *smu, bool en)
@@ -2435,7 +2184,7 @@ static int arcturus_allow_xgmi_power_down(struct smu_context *smu, bool en)
 	uint32_t smu_version;
 	int ret;
 
-	ret = smu_get_smc_version(smu, NULL, &smu_version);
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (ret) {
 		dev_err(smu->adev->dev, "Failed to get smu version!\n");
 		return ret;
@@ -2448,12 +2197,12 @@ static int arcturus_allow_xgmi_power_down(struct smu_context *smu, bool en)
 	}
 
 	if (en)
-		return smu_send_smc_msg_with_param(smu,
+		return smu_cmn_send_smc_msg_with_param(smu,
 						   SMU_MSG_GmiPwrDnControl,
 						   1,
 						   NULL);
 
-	return smu_send_smc_msg_with_param(smu,
+	return smu_cmn_send_smc_msg_with_param(smu,
 					   SMU_MSG_GmiPwrDnControl,
 					   0,
 					   NULL);
@@ -2504,48 +2253,7 @@ static void arcturus_log_thermal_throttling_event(struct smu_context *smu)
 			log_buf);
 }
 
-static int arcturus_set_thermal_range(struct smu_context *smu,
-				       struct smu_temperature_range range)
-{
-	struct amdgpu_device *adev = smu->adev;
-	int low = SMU_THERMAL_MINIMUM_ALERT_TEMP;
-	int high = SMU_THERMAL_MAXIMUM_ALERT_TEMP;
-	uint32_t val;
-	struct smu_table_context *table_context = &smu->smu_table;
-	struct smu_11_0_powerplay_table *powerplay_table = table_context->power_play_table;
-
-	low = max(SMU_THERMAL_MINIMUM_ALERT_TEMP,
-			range.min / SMU_TEMPERATURE_UNITS_PER_CENTIGRADES);
-	high = min((uint16_t)SMU_THERMAL_MAXIMUM_ALERT_TEMP, powerplay_table->software_shutdown_temp);
-
-	if (low > high)
-		return -EINVAL;
-
-	val = RREG32_SOC15(THM, 0, mmTHM_THERMAL_INT_CTRL);
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, MAX_IH_CREDIT, 5);
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, THERM_IH_HW_ENA, 1);
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, THERM_INTH_MASK, 0);
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, THERM_INTL_MASK, 0);
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, DIG_THERM_INTH, (high & 0xff));
-	val = REG_SET_FIELD(val, THM_THERMAL_INT_CTRL, DIG_THERM_INTL, (low & 0xff));
-	val = val & (~THM_THERMAL_INT_CTRL__THERM_TRIGGER_MASK_MASK);
-
-	WREG32_SOC15(THM, 0, mmTHM_THERMAL_INT_CTRL, val);
-
-	return 0;
-}
-
 static const struct pptable_funcs arcturus_ppt_funcs = {
-	/* translate smu index into arcturus specific index */
-	.get_smu_msg_index = arcturus_get_smu_msg_index,
-	.get_smu_clk_index = arcturus_get_smu_clk_index,
-	.get_smu_feature_index = arcturus_get_smu_feature_index,
-	.get_smu_table_index = arcturus_get_smu_table_index,
-	.get_smu_power_index= arcturus_get_pwr_src_index,
-	.get_workload_type = arcturus_get_workload_type,
-	/* internal structurs allocations */
-	.tables_init = arcturus_tables_init,
-	.alloc_dpm_context = arcturus_allocate_dpm_context,
 	/* init dpm */
 	.get_allowed_feature_mask = arcturus_get_allowed_feature_mask,
 	/* btc */
@@ -2554,15 +2262,11 @@ static const struct pptable_funcs arcturus_ppt_funcs = {
 	.set_default_dpm_table = arcturus_set_default_dpm_table,
 	.populate_umd_state_clk = arcturus_populate_umd_state_clk,
 	.get_thermal_temperature_range = arcturus_get_thermal_temperature_range,
-	.get_current_clk_freq_by_table = arcturus_get_current_clk_freq_by_table,
 	.print_clk_levels = arcturus_print_clk_levels,
 	.force_clk_levels = arcturus_force_clk_levels,
 	.read_sensor = arcturus_read_sensor,
 	.get_fan_speed_percent = arcturus_get_fan_speed_percent,
 	.get_fan_speed_rpm = arcturus_get_fan_speed_rpm,
-	.force_dpm_limit_value = arcturus_force_dpm_limit_value,
-	.unforce_dpm_levels = arcturus_unforce_dpm_levels,
-	.get_profiling_clk_mask = arcturus_get_profiling_clk_mask,
 	.get_power_profile_mode = arcturus_get_power_profile_mode,
 	.set_power_profile_mode = arcturus_set_power_profile_mode,
 	.set_performance_level = arcturus_set_performance_level,
@@ -2571,13 +2275,13 @@ static const struct pptable_funcs arcturus_ppt_funcs = {
 	.get_power_limit = arcturus_get_power_limit,
 	.is_dpm_running = arcturus_is_dpm_running,
 	.dpm_set_vcn_enable = arcturus_dpm_set_vcn_enable,
-	.i2c_eeprom_init = arcturus_i2c_eeprom_control_init,
-	.i2c_eeprom_fini = arcturus_i2c_eeprom_control_fini,
+	.i2c_init = arcturus_i2c_control_init,
+	.i2c_fini = arcturus_i2c_control_fini,
 	.get_unique_id = arcturus_get_unique_id,
 	.init_microcode = smu_v11_0_init_microcode,
 	.load_microcode = smu_v11_0_load_microcode,
 	.fini_microcode = smu_v11_0_fini_microcode,
-	.init_smc_tables = smu_v11_0_init_smc_tables,
+	.init_smc_tables = arcturus_init_smc_tables,
 	.fini_smc_tables = smu_v11_0_fini_smc_tables,
 	.init_power = smu_v11_0_init_power,
 	.fini_power = smu_v11_0_fini_power,
@@ -2586,18 +2290,20 @@ static const struct pptable_funcs arcturus_ppt_funcs = {
 	.setup_pptable = arcturus_setup_pptable,
 	.get_vbios_bootup_values = smu_v11_0_get_vbios_bootup_values,
 	.check_fw_version = smu_v11_0_check_fw_version,
-	.write_pptable = smu_v11_0_write_pptable,
+	.write_pptable = smu_cmn_write_pptable,
 	.set_driver_table_location = smu_v11_0_set_driver_table_location,
 	.set_tool_table_location = smu_v11_0_set_tool_table_location,
 	.notify_memory_pool_location = smu_v11_0_notify_memory_pool_location,
 	.system_features_control = smu_v11_0_system_features_control,
-	.send_smc_msg_with_param = smu_v11_0_send_msg_with_param,
+	.send_smc_msg_with_param = smu_cmn_send_smc_msg_with_param,
+	.send_smc_msg = smu_cmn_send_smc_msg,
 	.init_display_count = NULL,
 	.set_allowed_mask = smu_v11_0_set_allowed_mask,
-	.get_enabled_mask = smu_v11_0_get_enabled_mask,
+	.get_enabled_mask = smu_cmn_get_enabled_mask,
+	.feature_is_enabled = smu_cmn_feature_is_enabled,
+	.disable_all_features_with_exception = smu_cmn_disable_all_features_with_exception,
 	.notify_display_change = NULL,
 	.set_power_limit = smu_v11_0_set_power_limit,
-	.get_current_clk_freq = smu_v11_0_get_current_clk_freq,
 	.init_max_sustainable_clocks = smu_v11_0_init_max_sustainable_clocks,
 	.enable_thermal_alert = smu_v11_0_enable_thermal_alert,
 	.disable_thermal_alert = smu_v11_0_disable_thermal_alert,
@@ -2619,14 +2325,20 @@ static const struct pptable_funcs arcturus_ppt_funcs = {
 	.baco_exit = smu_v11_0_baco_exit,
 	.get_dpm_ultimate_freq = smu_v11_0_get_dpm_ultimate_freq,
 	.set_soft_freq_limited_range = smu_v11_0_set_soft_freq_limited_range,
-	.override_pcie_parameters = NULL,
 	.set_df_cstate = arcturus_set_df_cstate,
 	.allow_xgmi_power_down = arcturus_allow_xgmi_power_down,
 	.log_thermal_throttling_event = arcturus_log_thermal_throttling_event,
-	.set_thermal_range = arcturus_set_thermal_range,
+	.get_pp_feature_mask = smu_cmn_get_pp_feature_mask,
+	.set_pp_feature_mask = smu_cmn_set_pp_feature_mask,
 };
 
 void arcturus_set_ppt_funcs(struct smu_context *smu)
 {
 	smu->ppt_funcs = &arcturus_ppt_funcs;
+	smu->message_map = arcturus_message_map;
+	smu->clock_map = arcturus_clk_map;
+	smu->feature_map = arcturus_feature_mask_map;
+	smu->table_map = arcturus_table_map;
+	smu->pwr_src_map = arcturus_pwr_src_map;
+	smu->workload_map = arcturus_workload_map;
 }
