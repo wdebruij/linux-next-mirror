@@ -649,39 +649,34 @@ static int intel_pstate_set_energy_pref_index(struct cpudata *cpu_data,
 	if (!pref_index)
 		epp = cpu_data->epp_default;
 
-	mutex_lock(&intel_pstate_limits_lock);
-
 	if (boot_cpu_has(X86_FEATURE_HWP_EPP)) {
-		u64 value;
-
-		ret = rdmsrl_on_cpu(cpu_data->cpu, MSR_HWP_REQUEST, &value);
-		if (ret)
-			goto return_pref;
+		/*
+		 * Use the cached HWP Request MSR value, because the register
+		 * itself may be updated by intel_pstate_hwp_boost_up() or
+		 * intel_pstate_hwp_boost_down() at any time.
+		 */
+		u64 value = READ_ONCE(cpu_data->hwp_req_cached);
 
 		value &= ~GENMASK_ULL(31, 24);
 
-		if (use_raw) {
-			if (raw_epp > 255) {
-				ret = -EINVAL;
-				goto return_pref;
-			}
-			value |= (u64)raw_epp << 24;
-			ret = wrmsrl_on_cpu(cpu_data->cpu, MSR_HWP_REQUEST, value);
-			goto return_pref;
-		}
-
-		if (epp == -EINVAL)
+		if (use_raw)
+			epp = raw_epp;
+		else if (epp == -EINVAL)
 			epp = epp_values[pref_index - 1];
 
 		value |= (u64)epp << 24;
+		/*
+		 * The only other updater of hwp_req_cached in the active mode,
+		 * intel_pstate_hwp_set(), is called under the same lock as this
+		 * function, so it cannot run in parallel with the update below.
+		 */
+		WRITE_ONCE(cpu_data->hwp_req_cached, value);
 		ret = wrmsrl_on_cpu(cpu_data->cpu, MSR_HWP_REQUEST, value);
 	} else {
 		if (epp == -EINVAL)
 			epp = (pref_index - 1) << 2;
 		ret = intel_pstate_set_epb(cpu_data->cpu, epp);
 	}
-return_pref:
-	mutex_unlock(&intel_pstate_limits_lock);
 
 	return ret;
 }
@@ -708,8 +703,8 @@ static ssize_t store_energy_performance_preference(
 	struct cpudata *cpu_data = all_cpu_data[policy->cpu];
 	char str_preference[21];
 	bool raw = false;
+	ssize_t ret;
 	u32 epp = 0;
-	int ret;
 
 	ret = sscanf(buf, "%20s", str_preference);
 	if (ret != 1)
@@ -724,14 +719,21 @@ static ssize_t store_energy_performance_preference(
 		if (ret)
 			return ret;
 
+		if (epp > 255)
+			return -EINVAL;
+
 		raw = true;
 	}
 
-	ret = intel_pstate_set_energy_pref_index(cpu_data, ret, raw, epp);
-	if (ret)
-		return ret;
+	mutex_lock(&intel_pstate_limits_lock);
 
-	return count;
+	ret = intel_pstate_set_energy_pref_index(cpu_data, ret, raw, epp);
+	if (!ret)
+		ret = count;
+
+	mutex_unlock(&intel_pstate_limits_lock);
+
+	return ret;
 }
 
 static ssize_t show_energy_performance_preference(
