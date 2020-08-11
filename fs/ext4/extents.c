@@ -340,7 +340,7 @@ static int ext4_valid_extent(struct inode *inode, struct ext4_extent *ext)
 	 */
 	if (lblock + len <= lblock)
 		return 0;
-	return ext4_data_block_valid(EXT4_SB(inode->i_sb), block, len);
+	return ext4_inode_block_valid(inode, block, len);
 }
 
 static int ext4_valid_extent_idx(struct inode *inode,
@@ -348,7 +348,7 @@ static int ext4_valid_extent_idx(struct inode *inode,
 {
 	ext4_fsblk_t block = ext4_idx_pblock(ext_idx);
 
-	return ext4_data_block_valid(EXT4_SB(inode->i_sb), block, 1);
+	return ext4_inode_block_valid(inode, block, 1);
 }
 
 static int ext4_valid_extent_entries(struct inode *inode,
@@ -507,14 +507,10 @@ __read_extent_tree_block(const char *function, unsigned int line,
 	}
 	if (buffer_verified(bh) && !(flags & EXT4_EX_FORCE_CACHE))
 		return bh;
-	if (!ext4_has_feature_journal(inode->i_sb) ||
-	    (inode->i_ino !=
-	     le32_to_cpu(EXT4_SB(inode->i_sb)->s_es->s_journal_inum))) {
-		err = __ext4_ext_check(function, line, inode,
-				       ext_block_hdr(bh), depth, pblk);
-		if (err)
-			goto errout;
-	}
+	err = __ext4_ext_check(function, line, inode,
+			       ext_block_hdr(bh), depth, pblk);
+	if (err)
+		goto errout;
 	set_buffer_verified(bh);
 	/*
 	 * If this is a leaf block, cache all of its entries
@@ -693,10 +689,8 @@ void ext4_ext_drop_refs(struct ext4_ext_path *path)
 		return;
 	depth = path->p_depth;
 	for (i = 0; i <= depth; i++, path++) {
-		if (path->p_bh) {
-			brelse(path->p_bh);
-			path->p_bh = NULL;
-		}
+		brelse(path->p_bh);
+		path->p_bh = NULL;
 	}
 }
 
@@ -1915,7 +1909,7 @@ out:
 
 /*
  * ext4_ext_insert_extent:
- * tries to merge requsted extent into the existing extent or
+ * tries to merge requested extent into the existing extent or
  * inserts requested extent as new one into the tree,
  * creating new leaf in the no-space case.
  */
@@ -3125,7 +3119,7 @@ static int ext4_ext_zeroout(struct inode *inode, struct ext4_extent *ex)
  *
  *
  * Splits extent [a, b] into two extents [a, @split) and [@split, b], states
- * of which are deterimined by split_flag.
+ * of which are determined by split_flag.
  *
  * There are two cases:
  *  a> the extent are splitted into two extent.
@@ -3650,7 +3644,7 @@ static int ext4_split_convert_extents(handle_t *handle,
 		eof_block = map->m_lblk + map->m_len;
 	/*
 	 * It is safe to convert extent to initialized via explicit
-	 * zeroout only if extent is fully insde i_size or new_size.
+	 * zeroout only if extent is fully inside i_size or new_size.
 	 */
 	depth = ext_depth(inode);
 	ex = path[depth].p_ext;
@@ -4495,7 +4489,7 @@ static long ext4_zero_range(struct file *file, loff_t offset,
 	}
 
 	/*
-	 * Round up offset. This is not fallocate, we neet to zero out
+	 * Round up offset. This is not fallocate, we need to zero out
 	 * blocks, so convert interior block aligned part of the range to
 	 * unwritten and possibly manually zero out unaligned parts of the
 	 * range.
@@ -5579,7 +5573,7 @@ ext4_swap_extents(handle_t *handle, struct inode *inode1,
 		}
 		ex1 = path1[path1->p_depth].p_ext;
 		ex2 = path2[path2->p_depth].p_ext;
-		/* Do we have somthing to swap ? */
+		/* Do we have something to swap ? */
 		if (unlikely(!ex2 || !ex1))
 			goto finish;
 
