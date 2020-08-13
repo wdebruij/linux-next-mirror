@@ -24,9 +24,9 @@ properties:
       - const: renesas,r8a7778-cpg-clocks # R-Car M1
       - const: renesas,r8a7779-cpg-clocks # R-Car H1
       - items:
-        - enum:
-            - renesas,r7s72100-cpg-clocks # RZ/A1H
-        - const: renesas,rz-cpg-clocks    # RZ/A1
+          - enum:
+              - renesas,r7s72100-cpg-clocks # RZ/A1H
+          - const: renesas,rz-cpg-clocks    # RZ/A1
       - const: renesas,sh73a0-cpg-clocks  # SH-Mobile AG5
 
   reg:
