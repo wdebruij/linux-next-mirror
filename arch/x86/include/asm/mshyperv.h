@@ -53,6 +53,7 @@ typedef int (*hyperv_fill_flush_list_func)(
 #define hv_enable_vdso_clocksource() \
 	vclocks_set_used(VDSO_CLOCKMODE_HVCLOCK);
 #define hv_get_raw_timer() rdtsc_ordered()
+#define hv_get_vector() HYPERVISOR_CALLBACK_VECTOR
 
 void hyperv_vector_handler(struct pt_regs *regs);
 
