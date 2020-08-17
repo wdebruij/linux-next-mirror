@@ -620,7 +620,7 @@ static unsigned int pxa_mbus_config_compatible(const struct v4l2_mbus_config *cf
 					V4L2_MBUS_HSYNC_ACTIVE_LOW);
 		vsync = common_flags & (V4L2_MBUS_VSYNC_ACTIVE_HIGH |
 					V4L2_MBUS_VSYNC_ACTIVE_LOW);
-		/* fall through */
+		fallthrough;
 	case V4L2_MBUS_BT656:
 		pclk = common_flags & (V4L2_MBUS_PCLK_SAMPLE_RISING |
 				       V4L2_MBUS_PCLK_SAMPLE_FALLING);
@@ -1317,7 +1317,7 @@ static void pxa_camera_setup_cicr(struct pxa_camera_dev *pcdev,
 		 * transformation. Note that UYVY is the only format that
 		 * should be used if pxa framebuffer Overlay2 is used.
 		 */
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_UYVY:
 	case V4L2_PIX_FMT_VYUY:
 	case V4L2_PIX_FMT_YUYV:
@@ -1754,7 +1754,7 @@ static int pxa_camera_get_formats(struct v4l2_device *v4l2_dev,
 				"Providing format %s using code %d\n",
 				pxa_camera_formats[0].name, code.code);
 		}
-	/* fall through */
+		fallthrough;
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
 	case MEDIA_BUS_FMT_YVYU8_2X8:
