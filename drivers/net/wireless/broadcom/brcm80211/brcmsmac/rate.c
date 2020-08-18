@@ -370,7 +370,6 @@ u32 brcms_c_compute_rspec(struct d11rxhdr *rxh, u8 *plcp)
 			}
 			break;
 		case PRXS0_STDN:
-			/* fallthru */
 		default:
 			/* not supported, error condition */
 			break;
