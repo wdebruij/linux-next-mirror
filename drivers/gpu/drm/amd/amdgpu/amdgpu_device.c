@@ -1199,6 +1199,11 @@ static int amdgpu_device_check_arguments(struct amdgpu_device *adev)
 
 	amdgpu_gmc_tmz_set(adev);
 
+	if (amdgpu_num_kcq > 8 || amdgpu_num_kcq < 0) {
+		amdgpu_num_kcq = 8;
+		dev_warn(adev->dev, "set kernel compute queue number to 8 due to invalid parameter provided by user\n");
+	}
+
 	return 0;
 }
 
@@ -1563,7 +1568,7 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
 
 	adev->firmware.gpu_info_fw = NULL;
 
-	if (adev->discovery_bin) {
+	if (adev->mman.discovery_bin) {
 		amdgpu_discovery_get_gfx_info(adev);
 
 		/*
@@ -2055,13 +2060,19 @@ static int amdgpu_device_ip_init(struct amdgpu_device *adev)
 	 * it should be called after amdgpu_device_ip_hw_init_phase2  since
 	 * for some ASICs the RAS EEPROM code relies on SMU fully functioning
 	 * for I2C communication which only true at this point.
-	 * recovery_init may fail, but it can free all resources allocated by
-	 * itself and its failure should not stop amdgpu init process.
+	 *
+	 * amdgpu_ras_recovery_init may fail, but the upper only cares the
+	 * failure from bad gpu situation and stop amdgpu init process
+	 * accordingly. For other failed cases, it will still release all
+	 * the resource and print error message, rather than returning one
+	 * negative value to upper level.
 	 *
 	 * Note: theoretically, this should be called before all vram allocations
 	 * to protect retired page from abusing
 	 */
-	amdgpu_ras_recovery_init(adev);
+	r = amdgpu_ras_recovery_init(adev);
+	if (r)
+		goto init_failed;
 
 	if (adev->gmc.xgmi.num_physical_nodes > 1)
 		amdgpu_xgmi_add_device(adev);
@@ -2217,9 +2228,7 @@ static int amdgpu_device_enable_mgpu_fan_boost(void)
 		gpu_ins = &(mgpu_info.gpu_ins[i]);
 		adev = gpu_ins->adev;
 		if (!(adev->flags & AMD_IS_APU) &&
-		    !gpu_ins->mgpu_fan_enabled &&
-		    adev->powerplay.pp_funcs &&
-		    adev->powerplay.pp_funcs->enable_mgpu_fan_boost) {
+		    !gpu_ins->mgpu_fan_enabled) {
 			ret = amdgpu_dpm_enable_mgpu_fan_boost(adev);
 			if (ret)
 				break;
@@ -2777,6 +2786,12 @@ bool amdgpu_device_asic_has_dc_support(enum amd_asic_type asic_type)
 {
 	switch (asic_type) {
 #if defined(CONFIG_DRM_AMD_DC)
+#if defined(CONFIG_DRM_AMD_DC_SI)
+	case CHIP_TAHITI:
+	case CHIP_PITCAIRN:
+	case CHIP_VERDE:
+	case CHIP_OLAND:
+#endif
 	case CHIP_BONAIRE:
 	case CHIP_KAVERI:
 	case CHIP_KABINI:
@@ -3410,7 +3425,7 @@ void amdgpu_device_fini(struct amdgpu_device *adev)
 	sysfs_remove_files(&adev->dev->kobj, amdgpu_dev_attributes);
 	if (IS_ENABLED(CONFIG_PERF_EVENTS))
 		amdgpu_pmu_fini(adev);
-	if (adev->discovery_bin)
+	if (adev->mman.discovery_bin)
 		amdgpu_discovery_fini(adev);
 }
 
@@ -4109,15 +4124,29 @@ static int amdgpu_do_asic_reset(struct amdgpu_hive_info *hive,
 
 				amdgpu_fbdev_set_suspend(tmp_adev, 0);
 
-				/* must succeed. */
-				amdgpu_ras_resume(tmp_adev);
+				/*
+				 * The GPU enters bad state once faulty pages
+				 * by ECC has reached the threshold, and ras
+				 * recovery is scheduled next. So add one check
+				 * here to break recovery if it indeed exceeds
+				 * bad page threshold, and remind user to
+				 * retire this GPU or setting one bigger
+				 * bad_page_threshold value to fix this once
+				 * probing driver again.
+				 */
+				if (!amdgpu_ras_check_err_threshold(tmp_adev)) {
+					/* must succeed. */
+					amdgpu_ras_resume(tmp_adev);
+				} else {
+					r = -EINVAL;
+					goto out;
+				}
 
 				/* Update PSP FW topology after reset */
 				if (hive && tmp_adev->gmc.xgmi.num_physical_nodes > 1)
 					r = amdgpu_xgmi_update_topology(hive, tmp_adev);
 			}
 		}
-
 
 out:
 		if (!r) {

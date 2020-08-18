@@ -612,6 +612,7 @@ int amdgpu_amdkfd_submit_ib(struct kgd_dev *kgd, enum kgd_engine_type engine,
 	job->vmid = vmid;
 
 	ret = amdgpu_ib_schedule(ring, 1, ib, job, &f);
+
 	if (ret) {
 		DRM_ERROR("amdgpu: failed to schedule IB.\n");
 		goto err_ib_sched;
@@ -753,6 +754,10 @@ void kgd2kfd_interrupt(struct kfd_dev *kfd, const void *ih_ring_entry)
 }
 
 void kgd2kfd_set_sram_ecc_flag(struct kfd_dev *kfd)
+{
+}
+
+void kgd2kfd_smi_event_throttle(struct kfd_dev *kfd, uint32_t throttle_bitmask)
 {
 }
 #endif
