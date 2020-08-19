@@ -375,7 +375,7 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 			err = -EINVAL;
 			goto out_err;
 		}
-		/* fall through */
+		fallthrough;
 
 	case NLA_STRING:
 		if (attrlen < 1)
@@ -449,7 +449,7 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 					    "Unsupported attribute");
 			return -EINVAL;
 		}
-		/* fall through */
+		fallthrough;
 	case NLA_MIN_LEN:
 		if (attrlen < pt->len)
 			goto out_err;
@@ -461,7 +461,7 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 				goto out_err;
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	default:
 		if (pt->len)
 			minlen = pt->len;
