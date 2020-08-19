@@ -58,7 +58,6 @@
 #include <plat/devs.h>
 #include <plat/gpio-cfg.h>
 #include <plat/pm.h>
-#include <plat/samsung-time.h>
 
 #include "common.h"
 #include "h1940.h"
@@ -180,9 +179,9 @@ static struct s3c2410_ts_mach_info h1940_ts_cfg __initdata = {
 		.cfg_gpio = s3c24xx_ts_cfg_gpio,
 };
 
-/**
+/*
  * Set lcd on or off
- **/
+ */
 static struct s3c2410fb_display h1940_lcd __initdata = {
 	.lcdcon5=	S3C2410_LCDCON5_FRM565 | \
 			S3C2410_LCDCON5_INVVLINE | \
@@ -468,9 +467,9 @@ static struct gpiod_lookup_table h1940_mmc_gpio_table = {
 	.dev_id = "s3c2410-sdi",
 	.table = {
 		/* Card detect S3C2410_GPF(5) */
-		GPIO_LOOKUP("GPF", 5, "cd", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("GPIOF", 5, "cd", GPIO_ACTIVE_LOW),
 		/* Write protect S3C2410_GPH(8) */
-		GPIO_LOOKUP("GPH", 8, "wp", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("GPIOH", 8, "wp", GPIO_ACTIVE_LOW),
 		{ },
 	},
 };
