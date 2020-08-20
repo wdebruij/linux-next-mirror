@@ -23,14 +23,12 @@
 #include <asm/mach/irq.h>
 
 #include <mach/irqs.h>
-#include <mach/hardware.h>
 #include <mach/map.h>
 
 #include <plat/devs.h>
 #include <plat/cpu.h>
 #include <linux/platform_data/i2c-s3c2410.h>
 #include <mach/gpio-samsung.h>
-#include <plat/samsung-time.h>
 
 #include "common.h"
 
@@ -89,5 +87,4 @@ MACHINE_START(SMDK6400, "SMDK6400")
 	.map_io		= smdk6400_map_io,
 	.init_machine	= smdk6400_machine_init,
 	.init_time	= samsung_timer_init,
-	.restart	= s3c64xx_restart,
 MACHINE_END
