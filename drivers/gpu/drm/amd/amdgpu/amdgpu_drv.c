@@ -88,9 +88,10 @@
  * - 3.37.0 - L2 is invalidated before SDMA IBs, needed for correctness
  * - 3.38.0 - Add AMDGPU_IB_FLAG_EMIT_MEM_SYNC
  * - 3.39.0 - DMABUF implicit sync does a full pipeline sync
+ * - 3.40.0 - Add AMDGPU_IDS_FLAGS_TMZ
  */
 #define KMS_DRIVER_MAJOR	3
-#define KMS_DRIVER_MINOR	39
+#define KMS_DRIVER_MINOR	40
 #define KMS_DRIVER_PATCHLEVEL	0
 
 int amdgpu_vram_limit = 0;
@@ -150,12 +151,14 @@ int amdgpu_noretry;
 int amdgpu_force_asic_type = -1;
 int amdgpu_tmz = 0;
 int amdgpu_reset_method = -1; /* auto */
+int amdgpu_num_kcq = -1;
 
 struct amdgpu_mgpu_info mgpu_info = {
 	.mutex = __MUTEX_INITIALIZER(mgpu_info.mutex),
 };
 int amdgpu_ras_enable = -1;
 uint amdgpu_ras_mask = 0xffffffff;
+int amdgpu_bad_page_threshold = -1;
 
 /**
  * DOC: vramlimit (int)
@@ -715,6 +718,15 @@ MODULE_PARM_DESC(queue_preemption_timeout_ms, "queue preemption timeout in ms (1
 bool debug_evictions;
 module_param(debug_evictions, bool, 0644);
 MODULE_PARM_DESC(debug_evictions, "enable eviction debug messages (false = default)");
+
+/**
+ * DOC: no_system_mem_limit(bool)
+ * Disable system memory limit, to support multiple process shared memory
+ */
+bool no_system_mem_limit;
+module_param(no_system_mem_limit, bool, 0644);
+MODULE_PARM_DESC(no_system_mem_limit, "disable system memory limit (false = default)");
+
 #endif
 
 /**
@@ -764,6 +776,19 @@ module_param_named(tmz, amdgpu_tmz, int, 0444);
  */
 MODULE_PARM_DESC(reset_method, "GPU reset method (-1 = auto (default), 0 = legacy, 1 = mode0, 2 = mode1, 3 = mode2, 4 = baco)");
 module_param_named(reset_method, amdgpu_reset_method, int, 0444);
+
+/**
+ * DOC: bad_page_threshold (int)
+ * Bad page threshold is to specify the threshold value of faulty pages
+ * detected by RAS ECC, that may result in GPU entering bad status if total
+ * faulty pages by ECC exceed threshold value and leave it for user's further
+ * check.
+ */
+MODULE_PARM_DESC(bad_page_threshold, "Bad page threshold(-1 = auto(default value), 0 = disable bad page retirement)");
+module_param_named(bad_page_threshold, amdgpu_bad_page_threshold, int, 0444);
+
+MODULE_PARM_DESC(num_kcq, "number of kernel compute queue user want to setup (8 if set to greater than 8 or less than 0, only affect gfx 8+)");
+module_param_named(num_kcq, amdgpu_num_kcq, int, 0444);
 
 static const struct pci_device_id pciidlist[] = {
 #ifdef  CONFIG_DRM_AMDGPU_SI
