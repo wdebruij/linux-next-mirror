@@ -471,8 +471,6 @@ void free_devmap_managed_page(struct page *page)
 		return;
 	}
 
-	__ClearPageWaiters(page);
-
 	mem_cgroup_uncharge(page);
 
 	/*
