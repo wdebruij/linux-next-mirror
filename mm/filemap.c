@@ -1079,6 +1079,8 @@ static void wake_up_page_bit(struct page *page, int bit_nr)
 		 * other pages on it.
 		 *
 		 * That's okay, it's a rare case. The next waker will clear it.
+		 * Otherwise the bit will be cleared by PAGE_FLAGS_CHECK_AT_PREP
+		 * when the page is being freed.
 		 */
 	}
 	spin_unlock_irqrestore(&q->lock, flags);
