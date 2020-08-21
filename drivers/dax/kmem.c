@@ -82,8 +82,7 @@ int dev_dax_kmem_probe(struct device *dev)
 	rc = add_memory_driver_managed(numa_node, new_res->start,
 				       resource_size(new_res), kmem_name);
 	if (rc) {
-		release_resource(new_res);
-		kfree(new_res);
+		release_mem_region(kmem_start, kmem_size);
 		kfree(new_res_name);
 		return rc;
 	}
@@ -118,8 +117,7 @@ static int dev_dax_kmem_remove(struct device *dev)
 	}
 
 	/* Release and free dax resources */
-	release_resource(res);
-	kfree(res);
+	release_mem_region(kmem_start, kmem_size);
 	kfree(res_name);
 	dev_dax->dax_kmem_res = NULL;
 
