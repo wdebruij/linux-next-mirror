@@ -374,6 +374,9 @@ int amdgpu_bo_create_kernel_at(struct amdgpu_device *adev,
 	if (r)
 		return r;
 
+	if ((*bo_ptr) == NULL)
+		return 0;
+
 	/*
 	 * Remove the original mem node and create a new one at the request
 	 * position.
@@ -1299,7 +1302,7 @@ void amdgpu_bo_move_notify(struct ttm_buffer_object *bo,
 }
 
 /**
- * amdgpu_bo_move_notify - notification about a BO being released
+ * amdgpu_bo_release_notify - notification about a BO being released
  * @bo: pointer to a buffer object
  *
  * Wipes VRAM buffers whose contents should not be leaked before the
