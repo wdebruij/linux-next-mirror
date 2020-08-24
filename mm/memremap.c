@@ -40,12 +40,10 @@ EXPORT_SYMBOL_GPL(memremap_compat_align);
 #ifdef CONFIG_DEV_PAGEMAP_OPS
 DEFINE_STATIC_KEY_FALSE(devmap_managed_key);
 EXPORT_SYMBOL(devmap_managed_key);
-static atomic_t devmap_managed_enable;
 
 static void devmap_managed_enable_put(void)
 {
-	if (atomic_dec_and_test(&devmap_managed_enable))
-		static_branch_disable(&devmap_managed_key);
+	static_branch_dec(&devmap_managed_key);
 }
 
 static int devmap_managed_enable_get(struct dev_pagemap *pgmap)
@@ -56,8 +54,7 @@ static int devmap_managed_enable_get(struct dev_pagemap *pgmap)
 		return -EINVAL;
 	}
 
-	if (atomic_inc_return(&devmap_managed_enable) == 1)
-		static_branch_enable(&devmap_managed_key);
+	static_branch_inc(&devmap_managed_key);
 	return 0;
 }
 #else
@@ -95,6 +92,26 @@ static unsigned long pfn_next(unsigned long pfn)
 	if (pfn % 1024 == 0)
 		cond_resched();
 	return pfn + 1;
+}
+
+/*
+ * This returns true if the page is reserved by ZONE_DEVICE driver.
+ */
+bool pfn_zone_device_reserved(unsigned long pfn)
+{
+	struct dev_pagemap *pgmap;
+	struct vmem_altmap *altmap;
+	bool ret = false;
+
+	pgmap = get_dev_pagemap(pfn, NULL);
+	if (!pgmap)
+		return ret;
+	altmap = pgmap_altmap(pgmap);
+	if (altmap && pfn < (altmap->base_pfn + altmap->reserve))
+		ret = true;
+	put_dev_pagemap(pgmap);
+
+	return ret;
 }
 
 #define for_each_device_pfn(pfn, map) \
@@ -322,7 +339,8 @@ void *memremap_pages(struct dev_pagemap *pgmap, int nid)
 
 		zone = &NODE_DATA(nid)->node_zones[ZONE_DEVICE];
 		move_pfn_range_to_zone(zone, PHYS_PFN(res->start),
-				PHYS_PFN(resource_size(res)), params.altmap);
+				       PHYS_PFN(resource_size(res)),
+				       params.altmap, MIGRATE_MOVABLE);
 	}
 
 	mem_hotplug_done();
@@ -450,10 +468,6 @@ void free_devmap_managed_page(struct page *page)
 		wake_up_var(&page->_refcount);
 		return;
 	}
-
-	/* Clear Active bit in case of parallel mark_page_accessed */
-	__ClearPageActive(page);
-	__ClearPageWaiters(page);
 
 	mem_cgroup_uncharge(page);
 
