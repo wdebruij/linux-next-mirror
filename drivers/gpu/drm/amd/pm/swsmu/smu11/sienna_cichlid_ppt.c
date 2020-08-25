@@ -1163,9 +1163,14 @@ static int sienna_cichlid_get_fan_speed_rpm(struct smu_context *smu,
 	if (!speed)
 		return -EINVAL;
 
-	return sienna_cichlid_get_smu_metrics_data(smu,
-						   METRICS_CURR_FANSPEED,
-						   speed);
+	switch (smu_v11_0_get_fan_control_mode(smu)) {
+	case AMD_FAN_CTRL_AUTO:
+		return sienna_cichlid_get_smu_metrics_data(smu,
+							   METRICS_CURR_FANSPEED,
+							   speed);
+	default:
+		return smu_v11_0_get_fan_speed_rpm(smu, speed);
+	}
 }
 
 static int sienna_cichlid_get_fan_speed_percent(struct smu_context *smu,
@@ -1176,14 +1181,22 @@ static int sienna_cichlid_get_fan_speed_percent(struct smu_context *smu,
 	uint32_t current_rpm;
 	PPTable_t *pptable = smu->smu_table.driver_pptable;
 
-	ret = sienna_cichlid_get_fan_speed_rpm(smu, &current_rpm);
-	if (ret)
+	if (!speed)
+		return -EINVAL;
+
+	switch (smu_v11_0_get_fan_control_mode(smu)) {
+	case AMD_FAN_CTRL_AUTO:
+		ret = sienna_cichlid_get_smu_metrics_data(smu,
+							  METRICS_CURR_FANSPEED,
+							  &current_rpm);
+		if (!ret) {
+			percent = current_rpm * 100 / pptable->FanMaximumRpm;
+			*speed = percent > 100 ? 100 : percent;
+		}
 		return ret;
-
-	percent = current_rpm * 100 / pptable->FanMaximumRpm;
-	*speed = percent > 100 ? 100 : percent;
-
-	return ret;
+	default:
+		return smu_v11_0_get_fan_speed_percent(smu, speed);
+	}
 }
 
 static int sienna_cichlid_get_power_profile_mode(struct smu_context *smu, char *buf)
