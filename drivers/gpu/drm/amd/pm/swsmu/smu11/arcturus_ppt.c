@@ -1123,9 +1123,14 @@ static int arcturus_get_fan_speed_rpm(struct smu_context *smu,
 	if (!speed)
 		return -EINVAL;
 
-	return arcturus_get_smu_metrics_data(smu,
-					     METRICS_CURR_FANSPEED,
-					     speed);
+	switch (smu_v11_0_get_fan_control_mode(smu)) {
+	case AMD_FAN_CTRL_AUTO:
+		return arcturus_get_smu_metrics_data(smu,
+						     METRICS_CURR_FANSPEED,
+						     speed);
+	default:
+		return smu_v11_0_get_fan_speed_rpm(smu, speed);
+	}
 }
 
 static int arcturus_get_fan_speed_percent(struct smu_context *smu,
@@ -1138,14 +1143,19 @@ static int arcturus_get_fan_speed_percent(struct smu_context *smu,
 	if (!speed)
 		return -EINVAL;
 
-	ret = arcturus_get_fan_speed_rpm(smu, &current_rpm);
-	if (ret)
+	switch (smu_v11_0_get_fan_control_mode(smu)) {
+	case AMD_FAN_CTRL_AUTO:
+		ret = arcturus_get_smu_metrics_data(smu,
+						    METRICS_CURR_FANSPEED,
+						    &current_rpm);
+		if (!ret) {
+			percent = current_rpm * 100 / pptable->FanMaximumRpm;
+			*speed = percent > 100 ? 100 : percent;
+		}
 		return ret;
-
-	percent = current_rpm * 100 / pptable->FanMaximumRpm;
-	*speed = percent > 100 ? 100 : percent;
-
-	return ret;
+	default:
+		return smu_v11_0_get_fan_speed_percent(smu, speed);
+	}
 }
 
 static int arcturus_get_power_limit(struct smu_context *smu)
