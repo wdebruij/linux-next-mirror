@@ -1625,15 +1625,15 @@ static void __init exynos5x_clk_init(struct device_node *np,
 
 	if (soc == EXYNOS5420) {
 		exynos_register_cpu_clock(ctx, CLK_ARM_CLK, "armclk",
-			mout_cpu_p[0], mout_cpu_p[1], 0x200,
+			hws[CLK_MOUT_APLL], hws[CLK_MOUT_MSPLL_CPU], 0x200,
 			exynos5420_eglclk_d, ARRAY_SIZE(exynos5420_eglclk_d), 0);
 	} else {
 		exynos_register_cpu_clock(ctx, CLK_ARM_CLK, "armclk",
-			mout_cpu_p[0], mout_cpu_p[1], 0x200,
+			hws[CLK_MOUT_APLL], hws[CLK_MOUT_MSPLL_CPU], 0x200,
 			exynos5800_eglclk_d, ARRAY_SIZE(exynos5800_eglclk_d), 0);
 	}
 	exynos_register_cpu_clock(ctx, CLK_KFC_CLK, "kfcclk",
-		mout_kfc_p[0], mout_kfc_p[1], 0x28200,
+		hws[CLK_MOUT_KPLL], hws[CLK_MOUT_MSPLL_KFC],  0x28200,
 		exynos5420_kfcclk_d, ARRAY_SIZE(exynos5420_kfcclk_d), 0);
 
 	samsung_clk_extended_sleep_init(reg_base,
