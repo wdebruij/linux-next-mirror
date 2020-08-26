@@ -184,7 +184,7 @@ parse_memmap(char *p, u64 *start, u64 *size, enum parse_mode mode)
 			}
 			*size = 0;
 		}
-		/* Fall through */
+		fallthrough;
 	default:
 		/*
 		 * If w/o offset, only size specified, memmap=nn[KMG] has the
