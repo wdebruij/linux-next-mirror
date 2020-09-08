@@ -221,20 +221,6 @@ static void *func_remove(struct tracepoint_func **funcs,
 	return old;
 }
 
-static void tracepoint_update_call(struct tracepoint *tp, struct tracepoint_func *tp_funcs)
-{
-	void *func = tp->iterator;
-
-	/* Synthetic events do not have static call sites */
-	if (!tp->static_call_key)
-		return;
-
-	if (!tp_funcs[1].func)
-		func = tp_funcs[0].func;
-
-	__static_call_update(tp->static_call_key, tp->static_call_tramp, func);
-}
-
 /*
  * Add the probe function to a tracepoint.
  */
@@ -265,9 +251,8 @@ static int tracepoint_add_func(struct tracepoint *tp,
 	 * include/linux/tracepoint.h using rcu_dereference_sched().
 	 */
 	rcu_assign_pointer(tp->funcs, tp_funcs);
-	tracepoint_update_call(tp, tp_funcs);
-	static_key_enable(&tp->key);
-
+	if (!static_key_enabled(&tp->key))
+		static_key_slow_inc(&tp->key);
 	release_probes(old);
 	return 0;
 }
@@ -296,11 +281,9 @@ static int tracepoint_remove_func(struct tracepoint *tp,
 		if (tp->unregfunc && static_key_enabled(&tp->key))
 			tp->unregfunc();
 
-		static_key_disable(&tp->key);
-	} else {
-		tracepoint_update_call(tp, tp_funcs);
+		if (static_key_enabled(&tp->key))
+			static_key_slow_dec(&tp->key);
 	}
-
 	rcu_assign_pointer(tp->funcs, tp_funcs);
 	release_probes(old);
 	return 0;
