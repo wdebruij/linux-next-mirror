@@ -255,7 +255,7 @@ enum pl330_byteswap {
 static unsigned cmd_line;
 #define PL330_DBGCMD_DUMP(off, x...)	do { \
 						printk("%x:", cmd_line); \
-						printk(x); \
+						printk(KERN_CONT x); \
 						cmd_line += off; \
 					} while (0)
 #define PL330_DBGMC_START(addr)		(cmd_line = addr)
@@ -3034,9 +3034,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 
 	pl330->rstc = devm_reset_control_get_optional(&adev->dev, "dma");
 	if (IS_ERR(pl330->rstc)) {
-		if (PTR_ERR(pl330->rstc) != -EPROBE_DEFER)
-			dev_err(&adev->dev, "Failed to get reset!\n");
-		return PTR_ERR(pl330->rstc);
+		return dev_err_probe(&adev->dev, PTR_ERR(pl330->rstc), "Failed to get reset!\n");
 	} else {
 		ret = reset_control_deassert(pl330->rstc);
 		if (ret) {
@@ -3047,9 +3045,8 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 
 	pl330->rstc_ocp = devm_reset_control_get_optional(&adev->dev, "dma-ocp");
 	if (IS_ERR(pl330->rstc_ocp)) {
-		if (PTR_ERR(pl330->rstc_ocp) != -EPROBE_DEFER)
-			dev_err(&adev->dev, "Failed to get OCP reset!\n");
-		return PTR_ERR(pl330->rstc_ocp);
+		return dev_err_probe(&adev->dev, PTR_ERR(pl330->rstc_ocp),
+				     "Failed to get OCP reset!\n");
 	} else {
 		ret = reset_control_deassert(pl330->rstc_ocp);
 		if (ret) {
