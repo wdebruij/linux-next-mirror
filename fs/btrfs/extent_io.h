@@ -99,31 +99,14 @@ struct extent_buffer {
 	int read_mirror;
 	struct rcu_head rcu_head;
 	pid_t lock_owner;
+	bool lock_recursed;
+	struct rw_semaphore lock;
 
-	int blocking_writers;
-	atomic_t blocking_readers;
-	bool lock_nested;
 	/* >= 0 if eb belongs to a log tree, -1 otherwise */
 	short log_index;
 
-	/* protects write locks */
-	rwlock_t lock;
-
-	/* readers use lock_wq while they wait for the write
-	 * lock holders to unlock
-	 */
-	wait_queue_head_t write_lock_wq;
-
-	/* writers use read_lock_wq while they wait for readers
-	 * to unlock
-	 */
-	wait_queue_head_t read_lock_wq;
 	struct page *pages[INLINE_EXTENT_BUFFER_PAGES];
 #ifdef CONFIG_BTRFS_DEBUG
-	int spinning_writers;
-	atomic_t spinning_readers;
-	atomic_t read_locks;
-	int write_locks;
 	struct list_head leak_list;
 #endif
 };
@@ -203,7 +186,7 @@ int extent_writepages(struct address_space *mapping,
 int btree_write_cache_pages(struct address_space *mapping,
 			    struct writeback_control *wbc);
 void extent_readahead(struct readahead_control *rac);
-int extent_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
+int extent_fiemap(struct btrfs_inode *inode, struct fiemap_extent_info *fieinfo,
 		  u64 start, u64 len);
 void set_page_extent_mapped(struct page *page);
 
