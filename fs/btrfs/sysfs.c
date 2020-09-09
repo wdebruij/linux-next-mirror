@@ -809,6 +809,42 @@ static ssize_t btrfs_checksum_show(struct kobject *kobj,
 
 BTRFS_ATTR(, checksum, btrfs_checksum_show);
 
+static ssize_t btrfs_exclusive_operation_show(struct kobject *kobj,
+		struct kobj_attribute *a, char *buf)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+	const char *str;
+
+	switch (READ_ONCE(fs_info->exclusive_operation)) {
+		case  BTRFS_EXCLOP_NONE:
+			str = "none\n";
+			break;
+		case BTRFS_EXCLOP_BALANCE:
+			str = "balance\n";
+			break;
+		case BTRFS_EXCLOP_DEV_ADD:
+			str = "device add\n";
+			break;
+		case BTRFS_EXCLOP_DEV_REMOVE:
+			str = "device remove\n";
+			break;
+		case BTRFS_EXCLOP_DEV_REPLACE:
+			str = "device replace\n";
+			break;
+		case BTRFS_EXCLOP_RESIZE:
+			str = "resize\n";
+			break;
+		case BTRFS_EXCLOP_SWAP_ACTIVATE:
+			str = "swap activate\n";
+			break;
+		default:
+			str = "UNKNOWN\n";
+			break;
+	}
+	return scnprintf(buf, PAGE_SIZE, "%s", str);
+}
+BTRFS_ATTR(, exclusive_operation, btrfs_exclusive_operation_show);
+
 static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, label),
 	BTRFS_ATTR_PTR(, nodesize),
@@ -817,6 +853,7 @@ static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, quota_override),
 	BTRFS_ATTR_PTR(, metadata_uuid),
 	BTRFS_ATTR_PTR(, checksum),
+	BTRFS_ATTR_PTR(, exclusive_operation),
 	NULL,
 };
 
@@ -939,8 +976,6 @@ void btrfs_sysfs_remove_mounted(struct btrfs_fs_info *fs_info)
 {
 	struct kobject *fsid_kobj = &fs_info->fs_devices->fsid_kobj;
 
-	btrfs_reset_fs_info_ptr(fs_info);
-
 	sysfs_remove_link(fsid_kobj, "bdi");
 
 	if (fs_info->space_info_kobj) {
@@ -973,7 +1008,7 @@ static const char * const btrfs_feature_set_names[FEAT_MAX] = {
 	[FEAT_INCOMPAT]	 = "incompat",
 };
 
-const char * const btrfs_feature_set_name(enum btrfs_feature_set set)
+const char *btrfs_feature_set_name(enum btrfs_feature_set set)
 {
 	return btrfs_feature_set_names[set];
 }
@@ -1079,17 +1114,38 @@ void btrfs_sysfs_add_block_group_type(struct btrfs_block_group *cache)
 
 	rkobj->flags = cache->flags;
 	kobject_init(&rkobj->kobj, &btrfs_raid_ktype);
+
+	/*
+	 * We call this either on mount, or if we've created a block group for a
+	 * new index type while running (i.e. when restriping).  The running
+	 * case is tricky because we could race with other threads, so we need
+	 * to have this check to make sure we didn't already init the kobject.
+	 *
+	 * We don't have to protect on the free side because it only happens on
+	 * unmount.
+	 */
+	spin_lock(&space_info->lock);
+	if (space_info->block_group_kobjs[index]) {
+		spin_unlock(&space_info->lock);
+		kobject_put(&rkobj->kobj);
+		return;
+	} else {
+		space_info->block_group_kobjs[index] = &rkobj->kobj;
+	}
+	spin_unlock(&space_info->lock);
+
 	ret = kobject_add(&rkobj->kobj, &space_info->kobj, "%s",
 			  btrfs_bg_type_to_raid_name(rkobj->flags));
 	memalloc_nofs_restore(nofs_flag);
 	if (ret) {
+		spin_lock(&space_info->lock);
+		space_info->block_group_kobjs[index] = NULL;
+		spin_unlock(&space_info->lock);
 		kobject_put(&rkobj->kobj);
 		btrfs_warn(fs_info,
 			"failed to add kobject for block cache, ignoring");
 		return;
 	}
-
-	space_info->block_group_kobjs[index] = &rkobj->kobj;
 }
 
 /*
@@ -1324,8 +1380,8 @@ void btrfs_kobject_uevent(struct block_device *bdev, enum kobject_action action)
 			&disk_to_dev(bdev->bd_disk)->kobj);
 }
 
-void btrfs_sysfs_update_sprout_fsid(struct btrfs_fs_devices *fs_devices,
-				    const u8 *fsid)
+void btrfs_sysfs_update_sprout_fsid(struct btrfs_fs_devices *fs_devices)
+
 {
 	char fsid_buf[BTRFS_UUID_UNPARSED_SIZE];
 
@@ -1333,7 +1389,7 @@ void btrfs_sysfs_update_sprout_fsid(struct btrfs_fs_devices *fs_devices,
 	 * Sprouting changes fsid of the mounted filesystem, rename the fsid
 	 * directory
 	 */
-	snprintf(fsid_buf, BTRFS_UUID_UNPARSED_SIZE, "%pU", fsid);
+	snprintf(fsid_buf, BTRFS_UUID_UNPARSED_SIZE, "%pU", fs_devices->fsid);
 	if (kobject_rename(&fs_devices->fsid_kobj, fsid_buf))
 		btrfs_warn(fs_devices->fs_info,
 				"sysfs: failed to create fsid for sprout");
@@ -1399,8 +1455,6 @@ int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
 	int error;
 	struct btrfs_fs_devices *fs_devs = fs_info->fs_devices;
 	struct kobject *fsid_kobj = &fs_devs->fsid_kobj;
-
-	btrfs_set_fs_info_ptr(fs_info);
 
 	error = btrfs_sysfs_add_devices_dir(fs_devs, NULL);
 	if (error)
@@ -1626,12 +1680,16 @@ void btrfs_sysfs_feature_update(struct btrfs_fs_info *fs_info,
 {
 	struct btrfs_fs_devices *fs_devs;
 	struct kobject *fsid_kobj;
-	u64 features;
-	int ret;
+	u64 __maybe_unused features;
+	int __maybe_unused ret;
 
 	if (!fs_info)
 		return;
 
+	/*
+	 * See 14e46e04958df74 and e410e34fad913dd, feature bit updates are not
+	 * safe when called from some contexts (eg. balance)
+	 */
 	features = get_features(fs_info, set);
 	ASSERT(bit & supported_feature_masks[set]);
 
