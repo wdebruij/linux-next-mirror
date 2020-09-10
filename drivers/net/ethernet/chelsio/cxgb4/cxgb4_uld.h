@@ -302,6 +302,7 @@ enum cxgb4_uld {
 	CXGB4_ULD_ISCSI,
 	CXGB4_ULD_ISCSIT,
 	CXGB4_ULD_CRYPTO,
+	CXGB4_ULD_IPSEC,
 	CXGB4_ULD_TLS,
 	CXGB4_ULD_MAX
 };
@@ -368,7 +369,6 @@ struct chcr_stats_debug {
 	atomic_t complete;
 	atomic_t error;
 	atomic_t fallback;
-	atomic_t ipsec_cnt;
 	atomic_t tls_pdu_tx;
 	atomic_t tls_pdu_rx;
 	atomic_t tls_key;
@@ -393,6 +393,12 @@ struct chcr_stats_debug {
 
 #endif
 };
+
+#if IS_ENABLED(CONFIG_CHELSIO_IPSEC_INLINE)
+struct ch_ipsec_stats_debug {
+	atomic_t ipsec_cnt;
+};
+#endif
 
 #define OCQ_WIN_OFFSET(pdev, vres) \
 	(pci_resource_len((pdev), 2) - roundup_pow_of_two((vres)->ocq.size))
@@ -472,6 +478,9 @@ struct cxgb4_uld_info {
 	int (*tx_handler)(struct sk_buff *skb, struct net_device *dev);
 #if IS_ENABLED(CONFIG_TLS_DEVICE)
 	const struct tlsdev_ops *tlsdev_ops;
+#endif
+#if IS_ENABLED(CONFIG_XFRM_OFFLOAD)
+	const struct xfrmdev_ops *xfrmdev_ops;
 #endif
 };
 

@@ -146,6 +146,11 @@ enum {
 	CXGB4_ETHTOOL_FLASH_BOOTCFG = 4
 };
 
+enum cxgb4_netdev_tls_ops {
+	CXGB4_TLSDEV_OPS  = 1,
+	CXGB4_XFRMDEV_OPS
+};
+
 struct cxgb4_bootcfg_data {
 	__le16 signature;
 	__u8 reserved[2];
@@ -1196,6 +1201,9 @@ struct adapter {
 	struct cxgb4_tc_u32_table *tc_u32;
 	struct chcr_ktls chcr_ktls;
 	struct chcr_stats_debug chcr_stats;
+#if IS_ENABLED(CONFIG_CHELSIO_IPSEC_INLINE)
+	struct ch_ipsec_stats_debug ch_ipsec_stats;
+#endif
 
 	/* TC flower offload */
 	bool tc_flower_initialized;
