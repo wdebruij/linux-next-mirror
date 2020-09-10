@@ -6672,8 +6672,13 @@ static int io_sq_wake_function(struct wait_queue_entry *wqe, unsigned mode,
 	int ret;
 
 	ret = autoremove_wake_function(wqe, mode, sync, key);
-	if (ret)
-		io_ring_clear_wakeup_flag(ctx);
+	if (ret) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&ctx->completion_lock, flags);
+		ctx->rings->sq_flags &= ~IORING_SQ_NEED_WAKEUP;
+		spin_unlock_irqrestore(&ctx->completion_lock, flags);
+	}
 	return ret;
 }
 
@@ -7125,6 +7130,9 @@ static void io_sq_thread_stop(struct io_ring_ctx *ctx)
 		mutex_lock(&sqd->ctx_lock);
 		list_del(&ctx->sqd_list);
 		mutex_unlock(&sqd->ctx_lock);
+
+		if (sqd->thread)
+			finish_wait(&sqd->wait, &ctx->sqo_wait_entry);
 
 		io_sq_thread_unpark(sqd);
 		io_put_sq_data(sqd);
@@ -8546,6 +8554,7 @@ static int io_uring_flush(struct file *file, void *data)
 		mutex_lock(&ctx->uring_lock);
 		ctx->ring_fd = -1;
 		ctx->ring_file = NULL;
+		ctx->sqo_files = NULL;
 		mutex_unlock(&ctx->uring_lock);
 		io_ring_set_wakeup_flag(ctx);
 		io_sq_thread_unpark(sqd);
@@ -8692,6 +8701,7 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 			mutex_lock(&ctx->uring_lock);
 			ctx->ring_fd = fd;
 			ctx->ring_file = f.file;
+			ctx->sqo_files = current->files;
 			mutex_unlock(&ctx->uring_lock);
 
 			io_sq_thread_unpark(sqd);
