@@ -150,10 +150,37 @@ static inline void gic_set_base_accessor(struct gic_chip_data *data,
 {
 	data->get_base = f;
 }
+
+static DEFINE_STATIC_KEY_FALSE(frankengic_key);
+static DEFINE_PER_CPU(u32, sgi_intid);
+
+static void enable_frankengic(void)
+{
+	static_branch_enable(&frankengic_key);
+}
+
+static inline bool is_frankengic(void)
+{
+	return static_branch_unlikely(&frankengic_key);
+}
+
+static inline void set_sgi_intid(u32 intid)
+{
+	this_cpu_write(sgi_intid, intid);
+}
+
+static inline u32 get_sgi_intid(void)
+{
+	return this_cpu_read(sgi_intid);
+}
 #else
 #define gic_data_dist_base(d)	((d)->dist_base.common_base)
 #define gic_data_cpu_base(d)	((d)->cpu_base.common_base)
 #define gic_set_base_accessor(d, f)
+#define enable_frankengic()	do { } while(0)
+#define is_frankengic()		false
+#define set_sgi_intid(i)	do { } while(0)
+#define get_sgi_intid()		0
 #endif
 
 static inline void __iomem *gic_dist_base(struct irq_data *d)
@@ -226,7 +253,12 @@ static void gic_unmask_irq(struct irq_data *d)
 
 static void gic_eoi_irq(struct irq_data *d)
 {
-	writel_relaxed(gic_irq(d), gic_cpu_base(d) + GIC_CPU_EOI);
+	u32 hwirq = gic_irq(d);
+
+	if (is_frankengic() && hwirq < 16)
+		hwirq = get_sgi_intid();
+
+	writel_relaxed(hwirq, gic_cpu_base(d) + GIC_CPU_EOI);
 }
 
 static void gic_eoimode1_eoi_irq(struct irq_data *d)
@@ -348,8 +380,20 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 		 *
 		 * Pairs with the write barrier in gic_ipi_send_mask
 		 */
-		if (irqnr <= 15)
+		if (irqnr <= 15) {
 			smp_rmb();
+
+			/*
+			 * Samsung's funky GIC encodes the source CPU in
+			 * GICC_IAR, leading to the deactivation to fail if
+			 * not written back as is to GICC_EOI.  Stash the
+			 * INTID away for gic_eoi_irq() to write back.
+			 * This only works because we don't nest SGIs...
+			 */
+			if (is_frankengic())
+				set_sgi_intid(irqstat);
+		}
+
 		handle_domain_irq(gic->domain, irqnr, regs);
 	} while (1);
 }
@@ -1142,6 +1186,7 @@ static int gic_init_bases(struct gic_chip_data *gic,
 				gic->raw_cpu_base + offset;
 		}
 
+		enable_frankengic();
 		gic_set_base_accessor(gic, gic_get_percpu_base);
 	} else {
 		/* Normal, sane GIC... */
