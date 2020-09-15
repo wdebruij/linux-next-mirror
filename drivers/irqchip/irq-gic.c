@@ -83,9 +83,6 @@ struct gic_chip_data {
 #endif
 	struct irq_domain *domain;
 	unsigned int gic_irqs;
-#ifdef CONFIG_GIC_NON_BANKED
-	void __iomem *(*get_base)(union gic_base *);
-#endif
 };
 
 #ifdef CONFIG_BL_SWITCHER
@@ -125,35 +122,46 @@ static struct gic_chip_data gic_data[CONFIG_ARM_GIC_MAX_NR] __read_mostly;
 static struct gic_kvm_info gic_v2_kvm_info;
 
 #ifdef CONFIG_GIC_NON_BANKED
-static void __iomem *gic_get_percpu_base(union gic_base *base)
+static DEFINE_STATIC_KEY_FALSE(frankengic_key);
+static DEFINE_PER_CPU(u32, sgi_intid);
+
+static void enable_frankengic(void)
 {
-	return raw_cpu_read(*base->percpu_base);
+	static_branch_enable(&frankengic_key);
 }
 
-static void __iomem *gic_get_common_base(union gic_base *base)
+static inline bool is_frankengic(void)
 {
+	return static_branch_unlikely(&frankengic_key);
+}
+
+static inline void set_sgi_intid(u32 intid)
+{
+	this_cpu_write(sgi_intid, intid);
+}
+
+static inline u32 get_sgi_intid(void)
+{
+	return this_cpu_read(sgi_intid);
+}
+
+static inline void __iomem *__get_base(union gic_base *base)
+{
+	if (is_frankengic())
+		return raw_cpu_read(*base->percpu_base);
+
 	return base->common_base;
 }
 
-static inline void __iomem *gic_data_dist_base(struct gic_chip_data *data)
-{
-	return data->get_base(&data->dist_base);
-}
-
-static inline void __iomem *gic_data_cpu_base(struct gic_chip_data *data)
-{
-	return data->get_base(&data->cpu_base);
-}
-
-static inline void gic_set_base_accessor(struct gic_chip_data *data,
-					 void __iomem *(*f)(union gic_base *))
-{
-	data->get_base = f;
-}
+#define gic_data_dist_base(d)	__get_base(&(d)->dist_base)
+#define gic_data_cpu_base(d)	__get_base(&(d)->cpu_base)
 #else
 #define gic_data_dist_base(d)	((d)->dist_base.common_base)
 #define gic_data_cpu_base(d)	((d)->cpu_base.common_base)
-#define gic_set_base_accessor(d, f)
+#define enable_frankengic()	do { } while(0)
+#define is_frankengic()		false
+#define set_sgi_intid(i)	do { } while(0)
+#define get_sgi_intid()		0
 #endif
 
 static inline void __iomem *gic_dist_base(struct irq_data *d)
@@ -226,7 +234,12 @@ static void gic_unmask_irq(struct irq_data *d)
 
 static void gic_eoi_irq(struct irq_data *d)
 {
-	writel_relaxed(gic_irq(d), gic_cpu_base(d) + GIC_CPU_EOI);
+	u32 hwirq = gic_irq(d);
+
+	if (is_frankengic() && hwirq < 16)
+		hwirq = get_sgi_intid();
+
+	writel_relaxed(hwirq, gic_cpu_base(d) + GIC_CPU_EOI);
 }
 
 static void gic_eoimode1_eoi_irq(struct irq_data *d)
@@ -353,8 +366,20 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 		 *
 		 * Pairs with the write barrier in gic_ipi_send_mask
 		 */
-		if (irqnr <= 15)
+		if (irqnr <= 15) {
 			smp_rmb();
+
+			/*
+			 * Samsung's funky GIC encodes the source CPU in
+			 * GICC_IAR, leading to the deactivation to fail if
+			 * not written back as is to GICC_EOI.  Stash the
+			 * INTID away for gic_eoi_irq() to write back.
+			 * This only works because we don't nest SGIs...
+			 */
+			if (is_frankengic())
+				set_sgi_intid(irqstat);
+		}
+
 		handle_domain_irq(gic->domain, irqnr, regs);
 	} while (1);
 }
@@ -703,11 +728,6 @@ static int gic_notifier(struct notifier_block *self, unsigned long cmd,	void *v)
 	int i;
 
 	for (i = 0; i < CONFIG_ARM_GIC_MAX_NR; i++) {
-#ifdef CONFIG_GIC_NON_BANKED
-		/* Skip over unused GICs */
-		if (!gic_data[i].get_base)
-			continue;
-#endif
 		switch (cmd) {
 		case CPU_PM_ENTER:
 			gic_cpu_save(&gic_data[i]);
@@ -1152,7 +1172,7 @@ static int gic_init_bases(struct gic_chip_data *gic,
 				gic->raw_cpu_base + offset;
 		}
 
-		gic_set_base_accessor(gic, gic_get_percpu_base);
+		enable_frankengic();
 	} else {
 		/* Normal, sane GIC... */
 		WARN(gic->percpu_offset,
@@ -1160,7 +1180,6 @@ static int gic_init_bases(struct gic_chip_data *gic,
 		     gic->percpu_offset);
 		gic->dist_base.common_base = gic->raw_dist_base;
 		gic->cpu_base.common_base = gic->raw_cpu_base;
-		gic_set_base_accessor(gic, gic_get_common_base);
 	}
 
 	/*
