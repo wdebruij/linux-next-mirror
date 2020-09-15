@@ -637,15 +637,16 @@ static int btree_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
 
 	if (memcmp_extent_buffer(eb, result, 0, csum_size)) {
 		u32 val;
-		u32 found = 0;
+		u8 found[BTRFS_CSUM_SIZE] = { 0 };
 
 		memcpy(&found, result, csum_size);
 
 		read_extent_buffer(eb, &val, 0, csum_size);
 		btrfs_warn_rl(fs_info,
-		"%s checksum verify failed on %llu wanted %x found %x level %d",
+	"%s checksum verify failed on %llu wanted %x found " CSUM_FMT " level %d",
 			      fs_info->sb->s_id, eb->start,
-			      val, found, btrfs_header_level(eb));
+			      val, CSUM_FMT_VALUE(csum_size, found),
+			      btrfs_header_level(eb));
 		ret = -EUCLEAN;
 		goto err;
 	}
