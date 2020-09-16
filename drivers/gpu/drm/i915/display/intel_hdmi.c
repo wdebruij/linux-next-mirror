@@ -1477,7 +1477,8 @@ int intel_hdmi_hdcp_read_v_prime_part(struct intel_digital_port *dig_port,
 	return ret;
 }
 
-static int kbl_repositioning_enc_en_signal(struct intel_connector *connector)
+static int kbl_repositioning_enc_en_signal(struct intel_connector *connector,
+					   enum transcoder cpu_transcoder)
 {
 	struct drm_i915_private *dev_priv = to_i915(connector->base.dev);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
@@ -1494,13 +1495,15 @@ static int kbl_repositioning_enc_en_signal(struct intel_connector *connector)
 		usleep_range(25, 50);
 	}
 
-	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, false);
+	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, cpu_transcoder,
+					       false);
 	if (ret) {
 		drm_err(&dev_priv->drm,
 			"Disable HDCP signalling failed (%d)\n", ret);
 		return ret;
 	}
-	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, true);
+	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, cpu_transcoder,
+					       true);
 	if (ret) {
 		drm_err(&dev_priv->drm,
 			"Enable HDCP signalling failed (%d)\n", ret);
@@ -1512,6 +1515,7 @@ static int kbl_repositioning_enc_en_signal(struct intel_connector *connector)
 
 static
 int intel_hdmi_hdcp_toggle_signalling(struct intel_digital_port *dig_port,
+				      enum transcoder cpu_transcoder,
 				      bool enable)
 {
 	struct intel_hdmi *hdmi = &dig_port->hdmi;
@@ -1522,7 +1526,8 @@ int intel_hdmi_hdcp_toggle_signalling(struct intel_digital_port *dig_port,
 	if (!enable)
 		usleep_range(6, 60); /* Bspec says >= 6us */
 
-	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, enable);
+	ret = intel_ddi_toggle_hdcp_signalling(&dig_port->base, cpu_transcoder,
+					       enable);
 	if (ret) {
 		drm_err(&dev_priv->drm, "%s HDCP signalling failed (%d)\n",
 			enable ? "Enable" : "Disable", ret);
@@ -1534,17 +1539,17 @@ int intel_hdmi_hdcp_toggle_signalling(struct intel_digital_port *dig_port,
 	 * opportunity and enc_en signalling in KABYLAKE.
 	 */
 	if (IS_KABYLAKE(dev_priv) && enable)
-		return kbl_repositioning_enc_en_signal(connector);
+		return kbl_repositioning_enc_en_signal(connector,
+						       cpu_transcoder);
 
 	return 0;
 }
 
 static
-bool intel_hdmi_hdcp_check_link_once(struct intel_digital_port *dig_port)
+bool intel_hdmi_hdcp_check_link_once(struct intel_digital_port *dig_port,
+				     struct intel_connector *connector)
 {
 	struct drm_i915_private *i915 = to_i915(dig_port->base.base.dev);
-	struct intel_connector *connector =
-		dig_port->hdmi.attached_connector;
 	enum port port = dig_port->base.port;
 	enum transcoder cpu_transcoder = connector->hdcp.cpu_transcoder;
 	int ret;
@@ -1572,13 +1577,14 @@ bool intel_hdmi_hdcp_check_link_once(struct intel_digital_port *dig_port)
 }
 
 static
-bool intel_hdmi_hdcp_check_link(struct intel_digital_port *dig_port)
+bool intel_hdmi_hdcp_check_link(struct intel_digital_port *dig_port,
+				struct intel_connector *connector)
 {
 	struct drm_i915_private *i915 = to_i915(dig_port->base.base.dev);
 	int retry;
 
 	for (retry = 0; retry < 3; retry++)
-		if (intel_hdmi_hdcp_check_link_once(dig_port))
+		if (intel_hdmi_hdcp_check_link_once(dig_port, connector))
 			return true;
 
 	drm_err(&i915->drm, "Link check failed\n");
@@ -2667,6 +2673,9 @@ intel_hdmi_detect(struct drm_connector *connector, bool force)
 	drm_dbg_kms(&dev_priv->drm, "[CONNECTOR:%d:%s]\n",
 		    connector->base.id, connector->name);
 
+	if (!INTEL_DISPLAY_ENABLED(dev_priv))
+		return connector_status_disconnected;
+
 	wakeref = intel_display_power_get(dev_priv, POWER_DOMAIN_GMBUS);
 
 	if (INTEL_GEN(dev_priv) >= 11 &&
@@ -3250,7 +3259,6 @@ void intel_hdmi_init_connector(struct intel_digital_port *dig_port,
 	if (INTEL_GEN(dev_priv) >= 10 || IS_GEMINILAKE(dev_priv))
 		connector->ycbcr_420_allowed = true;
 
-	intel_encoder->hpd_pin = intel_hpd_pin_default(dev_priv, port);
 	intel_connector->polled = DRM_CONNECTOR_POLL_HPD;
 
 	if (HAS_DDI(dev_priv))
@@ -3264,7 +3272,7 @@ void intel_hdmi_init_connector(struct intel_digital_port *dig_port,
 	intel_hdmi->attached_connector = intel_connector;
 
 	if (is_hdcp_supported(dev_priv, port)) {
-		int ret = intel_hdcp_init(intel_connector,
+		int ret = intel_hdcp_init(intel_connector, port,
 					  &intel_hdmi_hdcp_shim);
 		if (ret)
 			drm_dbg_kms(&dev_priv->drm,
@@ -3335,6 +3343,8 @@ void intel_hdmi_init(struct drm_i915_private *dev_priv,
 
 	intel_encoder = &dig_port->base;
 
+	mutex_init(&dig_port->hdcp_mutex);
+
 	drm_encoder_init(&dev_priv->drm, &intel_encoder->base,
 			 &intel_hdmi_enc_funcs, DRM_MODE_ENCODER_TMDS,
 			 "HDMI %c", port_name(port));
@@ -3382,6 +3392,7 @@ void intel_hdmi_init(struct drm_i915_private *dev_priv,
 		intel_encoder->pipe_mask = ~0;
 	}
 	intel_encoder->cloneable = 1 << INTEL_OUTPUT_ANALOG;
+	intel_encoder->hpd_pin = intel_hpd_pin_default(dev_priv, port);
 	/*
 	 * BSpec is unclear about HDMI+HDMI cloning on g4x, but it seems
 	 * to work on real hardware. And since g4x can send infoframes to
