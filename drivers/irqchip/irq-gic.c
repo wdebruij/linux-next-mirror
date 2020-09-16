@@ -121,9 +121,10 @@ static struct gic_chip_data gic_data[CONFIG_ARM_GIC_MAX_NR] __read_mostly;
 
 static struct gic_kvm_info gic_v2_kvm_info;
 
+static DEFINE_PER_CPU(u32, sgi_intid);
+
 #ifdef CONFIG_GIC_NON_BANKED
 static DEFINE_STATIC_KEY_FALSE(frankengic_key);
-static DEFINE_PER_CPU(u32, sgi_intid);
 
 static void enable_frankengic(void)
 {
@@ -133,16 +134,6 @@ static void enable_frankengic(void)
 static inline bool is_frankengic(void)
 {
 	return static_branch_unlikely(&frankengic_key);
-}
-
-static inline void set_sgi_intid(u32 intid)
-{
-	this_cpu_write(sgi_intid, intid);
-}
-
-static inline u32 get_sgi_intid(void)
-{
-	return this_cpu_read(sgi_intid);
 }
 
 static inline void __iomem *__get_base(union gic_base *base)
@@ -160,8 +151,6 @@ static inline void __iomem *__get_base(union gic_base *base)
 #define gic_data_cpu_base(d)	((d)->cpu_base.common_base)
 #define enable_frankengic()	do { } while(0)
 #define is_frankengic()		false
-#define set_sgi_intid(i)	do { } while(0)
-#define get_sgi_intid()		0
 #endif
 
 static inline void __iomem *gic_dist_base(struct irq_data *d)
@@ -236,19 +225,24 @@ static void gic_eoi_irq(struct irq_data *d)
 {
 	u32 hwirq = gic_irq(d);
 
-	if (is_frankengic() && hwirq < 16)
-		hwirq = get_sgi_intid();
+	if (hwirq < 16)
+		hwirq = this_cpu_read(sgi_intid);
 
 	writel_relaxed(hwirq, gic_cpu_base(d) + GIC_CPU_EOI);
 }
 
 static void gic_eoimode1_eoi_irq(struct irq_data *d)
 {
+	u32 hwirq = gic_irq(d);
+
 	/* Do not deactivate an IRQ forwarded to a vcpu. */
 	if (irqd_is_forwarded_to_vcpu(d))
 		return;
 
-	writel_relaxed(gic_irq(d), gic_cpu_base(d) + GIC_CPU_DEACTIVATE);
+	if (hwirq < 16)
+		hwirq = this_cpu_read(sgi_intid);
+
+	writel_relaxed(hwirq, gic_cpu_base(d) + GIC_CPU_DEACTIVATE);
 }
 
 static int gic_irq_set_irqchip_state(struct irq_data *d,
@@ -370,14 +364,13 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 			smp_rmb();
 
 			/*
-			 * Samsung's funky GIC encodes the source CPU in
-			 * GICC_IAR, leading to the deactivation to fail if
-			 * not written back as is to GICC_EOI.  Stash the
-			 * INTID away for gic_eoi_irq() to write back.
-			 * This only works because we don't nest SGIs...
+			 * The GIC encodes the source CPU in GICC_IAR,
+			 * leading to the deactivation to fail if not
+			 * written back as is to GICC_EOI.  Stash the INTID
+			 * away for gic_eoi_irq() to write back.  This only
+			 * works because we don't nest SGIs...
 			 */
-			if (is_frankengic())
-				set_sgi_intid(irqstat);
+			this_cpu_write(sgi_intid, irqstat);
 		}
 
 		handle_domain_irq(gic->domain, irqnr, regs);
