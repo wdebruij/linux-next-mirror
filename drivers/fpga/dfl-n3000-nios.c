@@ -389,7 +389,7 @@ dump_sts:
 	return ret;
 }
 
-struct spi_board_info m10_n3000_info = {
+static struct spi_board_info m10_n3000_info = {
 	.modalias = "m10-n3000",
 	.max_speed_hz = 12500000,
 	.bus_num = 0,
