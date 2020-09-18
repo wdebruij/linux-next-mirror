@@ -50,7 +50,6 @@
 				 BTRFS_SUPER_FLAG_METADUMP |\
 				 BTRFS_SUPER_FLAG_METADUMP_V2)
 
-static const struct extent_io_ops btree_extent_io_ops;
 static void end_workqueue_fn(struct btrfs_work *work);
 static void btrfs_destroy_ordered_extents(struct btrfs_root *root);
 static int btrfs_destroy_delayed_refs(struct btrfs_transaction *trans,
@@ -524,9 +523,9 @@ static int check_tree_block_fsid(struct extent_buffer *eb)
 	return 1;
 }
 
-static int btree_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
-				      u64 phy_offset, struct page *page,
-				      u64 start, u64 end, int mirror)
+int btrfs_validate_metadata_buffer(struct btrfs_io_bio *io_bio, u64 phy_offset,
+				   struct page *page, u64 start, u64 end,
+				   int mirror)
 {
 	u64 found_start;
 	int found_level;
@@ -816,9 +815,8 @@ static int check_async_write(struct btrfs_fs_info *fs_info,
 	return 1;
 }
 
-static blk_status_t btree_submit_bio_hook(struct inode *inode, struct bio *bio,
-					  int mirror_num,
-					  unsigned long bio_flags)
+blk_status_t btrfs_submit_metadata_bio(struct inode *inode, struct bio *bio,
+				       int mirror_num, unsigned long bio_flags)
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	int async = check_async_write(fs_info, BTRFS_I(inode));
@@ -2068,8 +2066,6 @@ static void btrfs_init_btree_inode(struct btrfs_fs_info *fs_info)
 	BTRFS_I(inode)->io_tree.track_uptodate = false;
 	extent_map_tree_init(&BTRFS_I(inode)->extent_tree);
 
-	BTRFS_I(inode)->io_tree.ops = &btree_extent_io_ops;
-
 	BTRFS_I(inode)->root = btrfs_grab_root(fs_info->tree_root);
 	memset(&BTRFS_I(inode)->location, 0, sizeof(struct btrfs_key));
 	set_bit(BTRFS_INODE_DUMMY, &BTRFS_I(inode)->runtime_flags);
@@ -3278,6 +3274,26 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 		if (ret) {
 			btrfs_warn(fs_info,
 				"failed to create free space tree: %d", ret);
+			close_ctree(fs_info);
+			return ret;
+		}
+		/*
+		 * Creating the free space tree creates inode orphan items and
+		 * delayed iputs when it deletes the free space inodes. Later in
+		 * open_ctree, we run btrfs_orphan_cleanup which tries to clean
+		 * up the orphan items. However, the outstanding references on
+		 * the inodes from the delayed iputs causes the cleanup to fail.
+		 * To fix it, force going through the delayed iputs here.
+		 */
+		btrfs_run_delayed_iputs(fs_info);
+	}
+
+	if ((bool)btrfs_test_opt(fs_info, SPACE_CACHE) !=
+	    btrfs_free_space_cache_v1_active(fs_info)) {
+		ret = btrfs_update_free_space_cache_v1_active(fs_info);
+		if (ret) {
+			btrfs_warn(fs_info,
+				   "failed to update free space cache status: %d", ret);
 			close_ctree(fs_info);
 			return ret;
 		}
@@ -4636,9 +4652,3 @@ static int btrfs_cleanup_transaction(struct btrfs_fs_info *fs_info)
 
 	return 0;
 }
-
-static const struct extent_io_ops btree_extent_io_ops = {
-	/* mandatory callbacks */
-	.submit_bio_hook = btree_submit_bio_hook,
-	.readpage_end_io_hook = btree_readpage_end_io_hook,
-};
