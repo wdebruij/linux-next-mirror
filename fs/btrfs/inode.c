@@ -71,7 +71,6 @@ static const struct inode_operations btrfs_special_inode_operations;
 static const struct inode_operations btrfs_file_inode_operations;
 static const struct address_space_operations btrfs_aops;
 static const struct file_operations btrfs_dir_file_operations;
-static const struct extent_io_ops btrfs_extent_io_ops;
 
 static struct kmem_cache *btrfs_inode_cachep;
 struct kmem_cache *btrfs_trans_handle_cachep;
@@ -140,13 +139,6 @@ static inline void btrfs_cleanup_ordered_extents(struct btrfs_inode *inode,
 }
 
 static int btrfs_dirty_inode(struct inode *inode);
-
-#ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
-void btrfs_test_inode_set_ops(struct inode *inode)
-{
-	BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
-}
-#endif
 
 static int btrfs_init_inode_security(struct btrfs_trans_handle *trans,
 				     struct inode *inode,  struct inode *dir,
@@ -2184,9 +2176,8 @@ static blk_status_t btrfs_submit_bio_start(void *private_data, struct bio *bio,
  *
  *    c-3) otherwise:			async submit
  */
-static blk_status_t btrfs_submit_bio_hook(struct inode *inode, struct bio *bio,
-					  int mirror_num,
-					  unsigned long bio_flags)
+blk_status_t btrfs_submit_data_bio(struct inode *inode, struct bio *bio,
+				   int mirror_num, unsigned long bio_flags)
 
 {
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
@@ -2832,9 +2823,8 @@ zeroit:
  * if there's a match, we allow the bio to finish.  If not, the code in
  * extent_io.c will try to find good copies for us.
  */
-static int btrfs_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
-				      u64 phy_offset, struct page *page,
-				      u64 start, u64 end, int mirror)
+int btrfs_check_csum(struct btrfs_io_bio *io_bio, u64 phy_offset,
+		     struct page *page, u64 start, u64 end, int mirror)
 {
 	size_t offset = start - page_offset(page);
 	struct inode *inode = page->mapping->host;
@@ -3393,7 +3383,6 @@ cache_acl:
 	switch (inode->i_mode & S_IFMT) {
 	case S_IFREG:
 		inode->i_mapping->a_ops = &btrfs_aops;
-		BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
 		inode->i_fop = &btrfs_file_operations;
 		inode->i_op = &btrfs_file_inode_operations;
 		break;
@@ -6309,7 +6298,6 @@ static int btrfs_create(struct inode *dir, struct dentry *dentry,
 	if (err)
 		goto out_unlock;
 
-	BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
 	d_instantiate_new(dentry, inode);
 
 out_unlock:
@@ -9521,7 +9509,6 @@ static int btrfs_symlink(struct inode *dir, struct dentry *dentry,
 	inode->i_fop = &btrfs_file_operations;
 	inode->i_op = &btrfs_file_inode_operations;
 	inode->i_mapping->a_ops = &btrfs_aops;
-	BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
 
 	err = btrfs_init_inode_security(trans, inode, dir, &dentry->d_name);
 	if (err)
@@ -9841,7 +9828,6 @@ static int btrfs_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	inode->i_op = &btrfs_file_inode_operations;
 
 	inode->i_mapping->a_ops = &btrfs_aops;
-	BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
 
 	ret = btrfs_init_inode_security(trans, inode, dir, NULL);
 	if (ret)
@@ -10257,12 +10243,6 @@ static const struct file_operations btrfs_dir_file_operations = {
 #endif
 	.release        = btrfs_release_file,
 	.fsync		= btrfs_sync_file,
-};
-
-static const struct extent_io_ops btrfs_extent_io_ops = {
-	/* mandatory callbacks */
-	.submit_bio_hook = btrfs_submit_bio_hook,
-	.readpage_end_io_hook = btrfs_readpage_end_io_hook,
 };
 
 /*

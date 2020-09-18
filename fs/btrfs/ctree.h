@@ -2969,6 +2969,10 @@ void btrfs_inode_safe_disk_i_size_write(struct inode *inode, u64 new_i_size);
 u64 btrfs_file_extent_end(const struct btrfs_path *path);
 
 /* inode.c */
+blk_status_t btrfs_submit_data_bio(struct inode *inode, struct bio *bio,
+				   int mirror_num, unsigned long bio_flags);
+int btrfs_check_csum(struct btrfs_io_bio *io_bio, u64 phy_offset,
+		     struct page *page, u64 start, u64 end, int mirror);
 struct extent_map *btrfs_get_extent_fiemap(struct btrfs_inode *inode,
 					   u64 start, u64 len);
 noinline int can_nocow_extent(struct inode *inode, u64 offset, u64 *len,
@@ -3579,9 +3583,7 @@ static inline int btrfs_defrag_cancelled(struct btrfs_fs_info *fs_info)
 
 /* Sanity test specific functions */
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
-void btrfs_test_inode_set_ops(struct inode *inode);
 void btrfs_test_destroy_inode(struct inode *inode);
-
 static inline int btrfs_is_testing(struct btrfs_fs_info *fs_info)
 {
 	return test_bit(BTRFS_FS_STATE_DUMMY_FS_INFO, &fs_info->fs_state);

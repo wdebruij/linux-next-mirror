@@ -168,11 +168,12 @@ int __must_check submit_one_bio(struct bio *bio, int mirror_num,
 
 	bio->bi_private = NULL;
 
-	if (tree->ops)
-		ret = tree->ops->submit_bio_hook(tree->private_data, bio,
-						 mirror_num, bio_flags);
+	if (is_data_inode(tree->private_data))
+		ret = btrfs_submit_data_bio(tree->private_data, bio, mirror_num,
+					    bio_flags);
 	else
-		btrfsic_submit_bio(bio);
+		ret = btrfs_submit_metadata_bio(tree->private_data, bio,
+						mirror_num, bio_flags);
 
 	return blk_status_to_errno(ret);
 }
@@ -280,7 +281,6 @@ void extent_io_tree_init(struct btrfs_fs_info *fs_info,
 {
 	tree->fs_info = fs_info;
 	tree->state = RB_ROOT;
-	tree->ops = NULL;
 	tree->dirty_bytes = 0;
 	spin_lock_init(&tree->lock);
 	tree->private_data = private_data;
@@ -2819,8 +2819,7 @@ static void end_bio_extent_readpage(struct bio *bio)
 		struct page *page = bvec->bv_page;
 		struct inode *inode = page->mapping->host;
 		struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
-		bool data_inode = btrfs_ino(BTRFS_I(inode))
-			!= BTRFS_BTREE_INODE_OBJECTID;
+		bool data_inode = is_data_inode(inode);
 
 		btrfs_debug(fs_info,
 			"end_bio_extent_readpage: bi_sector=%llu, err=%d, mirror=%u",
@@ -2851,9 +2850,12 @@ static void end_bio_extent_readpage(struct bio *bio)
 
 		mirror = io_bio->mirror_num;
 		if (likely(uptodate)) {
-			ret = tree->ops->readpage_end_io_hook(io_bio, offset,
-							      page, start, end,
-							      mirror);
+			if (data_inode)
+				ret = btrfs_check_csum(io_bio, offset, page,
+						       start, end, mirror);
+			else
+				ret = btrfs_validate_metadata_buffer(io_bio,
+					offset, page, start, end, mirror);
 			if (ret)
 				uptodate = 0;
 			else
@@ -2881,7 +2883,7 @@ static void end_bio_extent_readpage(struct bio *bio)
 			if (!btrfs_submit_read_repair(inode, bio, offset, page,
 						start - page_offset(page),
 						start, end, mirror,
-						tree->ops->submit_bio_hook)) {
+						btrfs_submit_data_bio)) {
 				uptodate = !bio->bi_status;
 				offset += len;
 				continue;
@@ -3053,7 +3055,6 @@ static int submit_extent_page(unsigned int opf,
 		else
 			contig = bio_end_sector(bio) == sector;
 
-		ASSERT(tree->ops);
 		if (btrfs_bio_fits_in_stripe(page, page_size, bio, bio_flags))
 			can_merge = false;
 
