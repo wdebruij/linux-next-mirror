@@ -2816,8 +2816,7 @@ static void end_bio_extent_readpage(struct bio *bio)
 		struct page *page = bvec->bv_page;
 		struct inode *inode = page->mapping->host;
 		struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
-		bool data_inode = btrfs_ino(BTRFS_I(inode))
-			!= BTRFS_BTREE_INODE_OBJECTID;
+		bool data_inode = is_data_inode(inode);
 
 		btrfs_debug(fs_info,
 			"end_bio_extent_readpage: bi_sector=%llu, err=%d, mirror=%u",
