@@ -165,6 +165,11 @@ static inline struct mapped_device *__dm_table_get_md(struct dm_table *table)
 	return table->md;
 }
 
+static inline struct request_queue *__dm_table_get_md_queue(struct dm_table *table)
+{
+	return __dm_table_get_md(table)->queue;
+}
+
 static inline struct completion *dm_get_completion_from_kobject(struct kobject *kobj)
 {
 	return &container_of(kobj, struct dm_kobject_holder, kobj)->completion;

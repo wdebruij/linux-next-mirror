@@ -36,7 +36,7 @@ void dm_mq_cleanup_mapped_device(struct mapped_device *md);
 void dm_start_queue(struct request_queue *q);
 void dm_stop_queue(struct request_queue *q);
 
-void dm_mq_kick_requeue_list(struct mapped_device *md);
+void dm_mq_kick_requeue_list(struct request_queue *q);
 
 unsigned dm_get_reserved_rq_based_ios(void);
 

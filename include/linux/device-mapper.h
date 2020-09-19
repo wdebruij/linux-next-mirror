@@ -516,6 +516,8 @@ const char *dm_table_device_name(struct dm_table *t);
  */
 void dm_table_event(struct dm_table *t);
 
+struct request_queue *dm_table_get_md_queue(struct dm_table *t);
+
 /*
  * Run the queue for request-based targets.
  */

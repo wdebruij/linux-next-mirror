@@ -1057,7 +1057,7 @@ static sector_t max_io_len(struct dm_target *ti, sector_t sector)
 	 *   blk_max_size_offset() provides required splitting.
 	 * - blk_max_size_offset() also respects q->limits.max_sectors
 	 */
-	max_len = blk_max_size_offset(__dm_table_get_md(ti->table)->queue,
+	max_len = blk_max_size_offset(__dm_table_get_md_queue(ti->table),
 				      target_offset);
 	if (len > max_len)
 		len = max_len;

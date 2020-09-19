@@ -671,7 +671,7 @@ static int multipath_map_bio(struct dm_target *ti, struct bio *bio)
 static void process_queued_io_list(struct multipath *m)
 {
 	if (m->queue_mode == DM_TYPE_REQUEST_BASED)
-		dm_mq_kick_requeue_list(dm_table_get_md(m->ti->table));
+		dm_mq_kick_requeue_list(dm_table_get_md_queue(m->ti->table));
 	else if (m->queue_mode == DM_TYPE_BIO_BASED)
 		queue_work(kmultipathd, &m->process_queued_bios);
 }

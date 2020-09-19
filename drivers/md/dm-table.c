@@ -2014,16 +2014,20 @@ const char *dm_table_device_name(struct dm_table *t)
 }
 EXPORT_SYMBOL_GPL(dm_table_device_name);
 
+struct request_queue *dm_table_get_md_queue(struct dm_table *t)
+{
+	return __dm_table_get_md_queue(t);
+}
+EXPORT_SYMBOL(dm_table_get_md_queue);
+
 void dm_table_run_md_queue_async(struct dm_table *t)
 {
-	struct mapped_device *md;
 	struct request_queue *queue;
 
 	if (!dm_table_request_based(t))
 		return;
 
-	md = dm_table_get_md(t);
-	queue = dm_get_md_queue(md);
+	queue = __dm_table_get_md_queue(t);
 	if (queue)
 		blk_mq_run_hw_queues(queue, true);
 }
