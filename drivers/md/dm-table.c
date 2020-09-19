@@ -25,47 +25,9 @@
 
 #define DM_MSG_PREFIX "table"
 
-#define MAX_DEPTH 16
 #define NODE_SIZE L1_CACHE_BYTES
 #define KEYS_PER_NODE (NODE_SIZE / sizeof(sector_t))
 #define CHILDREN_PER_NODE (KEYS_PER_NODE + 1)
-
-struct dm_table {
-	struct mapped_device *md;
-	enum dm_queue_mode type;
-
-	/* btree table */
-	unsigned int depth;
-	unsigned int counts[MAX_DEPTH];	/* in nodes */
-	sector_t *index[MAX_DEPTH];
-
-	unsigned int num_targets;
-	unsigned int num_allocated;
-	sector_t *highs;
-	struct dm_target *targets;
-
-	struct target_type *immutable_target_type;
-
-	bool integrity_supported:1;
-	bool singleton:1;
-	unsigned integrity_added:1;
-
-	/*
-	 * Indicates the rw permissions for the new logical
-	 * device.  This should be a combination of FMODE_READ
-	 * and FMODE_WRITE.
-	 */
-	fmode_t mode;
-
-	/* a list of devices used by this table */
-	struct list_head devices;
-
-	/* events get handed up using this callback */
-	void (*event_fn)(void *);
-	void *event_context;
-
-	struct dm_md_mempools *mempools;
-};
 
 /*
  * Similar to ceiling(log_size(n))
@@ -2042,13 +2004,13 @@ int dm_table_resume_targets(struct dm_table *t)
 
 struct mapped_device *dm_table_get_md(struct dm_table *t)
 {
-	return t->md;
+	return __dm_table_get_md(t);
 }
 EXPORT_SYMBOL(dm_table_get_md);
 
 const char *dm_table_device_name(struct dm_table *t)
 {
-	return dm_device_name(t->md);
+	return dm_device_name(__dm_table_get_md(t));
 }
 EXPORT_SYMBOL_GPL(dm_table_device_name);
 
