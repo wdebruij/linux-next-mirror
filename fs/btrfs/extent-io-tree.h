@@ -48,6 +48,7 @@ enum {
 	IO_TREE_INODE_FILE_EXTENT,
 	IO_TREE_LOG_CSUM_RANGE,
 	IO_TREE_SELFTEST,
+	IO_TREE_DEVICE_ALLOC_STATE,
 };
 
 struct extent_io_tree {
@@ -61,7 +62,6 @@ struct extent_io_tree {
 	u8 owner;
 
 	spinlock_t lock;
-	const struct extent_io_ops *ops;
 };
 
 struct extent_state {
