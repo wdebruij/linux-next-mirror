@@ -1189,11 +1189,12 @@ static ssize_t do_process_madvise(int pidfd, struct iov_iter *iter,
 	struct task_struct *task;
 	struct mm_struct *mm;
 	size_t total_len = iov_iter_count(iter);
+	unsigned int pidfd_flags;
 
 	if (flags != 0)
 		return -EINVAL;
 
-	pid = pidfd_get_pid(pidfd);
+	pid = pidfd_get_pid(pidfd, &pidfd_flags);
 	if (IS_ERR(pid))
 		return PTR_ERR(pid);
 
