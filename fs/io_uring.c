@@ -2354,7 +2354,7 @@ static bool io_resubmit_prep(struct io_kiocb *req, int error)
 		goto end_req;
 	}
 
-	if (!req->io) {
+	if (!req->async_data) {
 		ret = io_import_iovec(rw, req, &iovec, &iter, false);
 		if (ret < 0)
 			goto end_req;
