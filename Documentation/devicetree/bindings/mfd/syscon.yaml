@@ -40,7 +40,10 @@ properties:
               - allwinner,sun50i-a64-system-controller
               - microchip,sparx5-cpu-syscon
               - mstar,msc313-pmsleep
-
+              - hisilicon,hi6220-sramctrl
+              - hisilicon,pcie-sas-subctrl
+              - hisilicon,peri-subctrl
+              - hisilicon,dsa-subctrl
           - const: syscon
 
       - contains:
