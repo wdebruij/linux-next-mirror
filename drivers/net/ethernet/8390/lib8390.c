@@ -50,6 +50,7 @@
 
   */
 
+#include <linux/build_bug.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/jiffies.h>
@@ -597,10 +598,12 @@ static void ei_tx_intr(struct net_device *dev)
 			ei_local->txing = 1;
 			NS8390_trigger_send(dev, ei_local->tx2, ei_local->tx_start_page + 6);
 			netif_trans_update(dev);
-			ei_local->tx2 = -1,
+			ei_local->tx2 = -1;
 			ei_local->lasttx = 2;
-		} else
-			ei_local->lasttx = 20, ei_local->txing = 0;
+		} else {
+			ei_local->lasttx = 20;
+			ei_local->txing = 0;
+		}
 	} else if (ei_local->tx2 < 0) {
 		if (ei_local->lasttx != 2  &&  ei_local->lasttx != -2)
 			pr_err("%s: bogus last_tx_buffer %d, tx2=%d\n",
@@ -612,8 +615,10 @@ static void ei_tx_intr(struct net_device *dev)
 			netif_trans_update(dev);
 			ei_local->tx1 = -1;
 			ei_local->lasttx = 1;
-		} else
-			ei_local->lasttx = 10, ei_local->txing = 0;
+		} else {
+			ei_local->lasttx = 10;
+			ei_local->txing = 0;
+		}
 	} /* else
 		netdev_warn(dev, "unexpected TX-done interrupt, lasttx=%d\n",
 			    ei_local->lasttx);
@@ -1014,8 +1019,7 @@ static void __NS8390_init(struct net_device *dev, int startp)
 	    ? (0x48 | ENDCFG_WTS | (ei_local->bigendian ? ENDCFG_BOS : 0))
 	    : 0x48;
 
-	if (sizeof(struct e8390_pkt_hdr) != 4)
-		panic("8390.c: header struct mispacked\n");
+	BUILD_BUG_ON(sizeof(struct e8390_pkt_hdr) != 4);
 	/* Follow National Semi's recommendations for initing the DP83902. */
 	ei_outb_p(E8390_NODMA+E8390_PAGE0+E8390_STOP, e8390_base+E8390_CMD); /* 0x21 */
 	ei_outb_p(endcfg, e8390_base + EN0_DCFG);	/* 0x48 or 0x49 */
