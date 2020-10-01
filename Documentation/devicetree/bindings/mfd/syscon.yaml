@@ -44,7 +44,10 @@ properties:
               - samsung,exynos4-sysreg
               - samsung,exynos5-sysreg
               - samsung,exynos5433-sysreg
-
+              - hisilicon,hi6220-sramctrl
+              - hisilicon,pcie-sas-subctrl
+              - hisilicon,peri-subctrl
+              - hisilicon,dsa-subctrl
           - const: syscon
 
       - contains:
