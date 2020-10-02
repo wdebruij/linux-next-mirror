@@ -32,6 +32,8 @@ properties:
   reg:
     maxItems: 1
 
+additionalProperties: false
+
 examples:
   - |
     syscon@10010000 {
