@@ -107,6 +107,8 @@ allOf:
           items:
             - const: adc
 
+additionalProperties: false
+
 examples:
   - |
     adc: adc@12d10000 {
