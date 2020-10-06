@@ -399,6 +399,8 @@ struct request_queue {
 	struct request		*last_merge;
 	struct elevator_queue	*elevator;
 
+	struct percpu_ref	q_usage_counter;
+
 	struct blk_queue_stats	*stats;
 	struct rq_qos		*rq_qos;
 
@@ -571,7 +573,6 @@ struct request_queue {
 	 * percpu_ref_kill() and percpu_ref_reinit().
 	 */
 	struct mutex		mq_freeze_lock;
-	struct percpu_ref	q_usage_counter;
 
 	struct blk_mq_tag_set	*tag_set;
 	struct list_head	tag_set_list;
@@ -1665,10 +1666,6 @@ extern int blk_integrity_compare(struct gendisk *, struct gendisk *);
 extern int blk_rq_map_integrity_sg(struct request_queue *, struct bio *,
 				   struct scatterlist *);
 extern int blk_rq_count_integrity_sg(struct request_queue *, struct bio *);
-extern bool blk_integrity_merge_rq(struct request_queue *, struct request *,
-				   struct request *);
-extern bool blk_integrity_merge_bio(struct request_queue *, struct request *,
-				    struct bio *);
 
 static inline struct blk_integrity *blk_get_integrity(struct gendisk *disk)
 {
@@ -1795,18 +1792,6 @@ static inline void blk_queue_max_integrity_segments(struct request_queue *q,
 static inline unsigned short queue_max_integrity_segments(const struct request_queue *q)
 {
 	return 0;
-}
-static inline bool blk_integrity_merge_rq(struct request_queue *rq,
-					  struct request *r1,
-					  struct request *r2)
-{
-	return true;
-}
-static inline bool blk_integrity_merge_bio(struct request_queue *rq,
-					   struct request *r,
-					   struct bio *b)
-{
-	return true;
 }
 
 static inline unsigned int bio_integrity_intervals(struct blk_integrity *bi,
