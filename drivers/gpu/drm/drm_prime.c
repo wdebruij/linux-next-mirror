@@ -807,6 +807,7 @@ struct sg_table *drm_prime_pages_to_sg(struct drm_device *dev,
 				       struct page **pages, unsigned int nr_pages)
 {
 	struct sg_table *sg = NULL;
+	struct scatterlist *sl;
 	size_t max_segment = 0;
 	int ret;
 
@@ -820,11 +821,13 @@ struct sg_table *drm_prime_pages_to_sg(struct drm_device *dev,
 		max_segment = dma_max_mapping_size(dev->dev);
 	if (max_segment == 0 || max_segment > SCATTERLIST_MAX_SEGMENT)
 		max_segment = SCATTERLIST_MAX_SEGMENT;
-	ret = __sg_alloc_table_from_pages(sg, pages, nr_pages, 0,
+	sl = __sg_alloc_table_from_pages(sg, pages, nr_pages, 0,
 					  nr_pages << PAGE_SHIFT,
-					  max_segment, GFP_KERNEL);
-	if (ret)
+					  max_segment, NULL, 0, GFP_KERNEL);
+	if (IS_ERR(sl)) {
+		ret = PTR_ERR(sl);
 		goto out;
+	}
 
 	return sg;
 out:
