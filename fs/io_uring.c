@@ -1041,6 +1041,24 @@ static inline void req_set_fail_links(struct io_kiocb *req)
 }
 
 /*
+ * None of these are dereferenced, they are simply used to check if any of
+ * them have changed. If we're under current and check they are still the
+ * same, we're fine to grab references to them for actual out-of-line use.
+ */
+static void io_init_identity(struct io_identity *id)
+{
+	id->files = current->files;
+	id->mm = current->mm;
+#ifdef CONFIG_BLK_CGROUP
+	id->blkcg_css = blkcg_css();
+#endif
+	id->creds = current_cred();
+	id->nsproxy = current->nsproxy;
+	id->fs = current->fs;
+	atomic_set(&id->count, 1);
+}
+
+/*
  * Note: must call io_req_init_async() for the first time you
  * touch any members of io_wq_work.
  */
@@ -1051,6 +1069,7 @@ static inline void io_req_init_async(struct io_kiocb *req)
 
 	memset(&req->work, 0, sizeof(req->work));
 	req->flags |= REQ_F_WORK_INITIALIZED;
+	io_init_identity(&req->identity);
 	req->work.identity = &req->identity;
 }
 
@@ -1191,9 +1210,77 @@ static void io_req_clean_work(struct io_kiocb *req)
 	}
 }
 
+/*
+ * Create a private copy of io_identity, since some fields don't match
+ * the current context.
+ */
+static void io_identity_cow(struct io_kiocb *req)
+{
+	const struct io_op_def *def = &io_op_defs[req->opcode];
+	struct io_ring_ctx *ctx = req->ctx;
+	struct io_identity *id;
+
+	id = kmemdup(req->work.identity, sizeof(*id), GFP_KERNEL);
+	if (unlikely(!id)) {
+		req->work.flags |= IO_WQ_WORK_CANCEL;
+		return;
+	}
+	req->work.identity = id;
+
+	if (!(req->work.flags & IO_WQ_WORK_FILES) &&
+	    (def->work_flags & IO_WQ_WORK_FILES) &&
+	    !(req->flags & REQ_F_NO_FILE_TABLE)) {
+		id->files = get_files_struct(current);
+		get_nsproxy(current->nsproxy);
+		id->nsproxy = current->nsproxy;
+		req->flags |= REQ_F_INFLIGHT;
+
+		spin_lock_irq(&ctx->inflight_lock);
+		list_add(&req->inflight_entry, &ctx->inflight_list);
+		spin_unlock_irq(&ctx->inflight_lock);
+		req->work.flags |= IO_WQ_WORK_FILES;
+	}
+	if (!(req->work.flags & IO_WQ_WORK_MM) &&
+	    (def->work_flags & IO_WQ_WORK_MM)) {
+		mmgrab(id->mm);
+		req->work.flags |= IO_WQ_WORK_MM;
+	}
+#ifdef CONFIG_BLK_CGROUP
+	if (!(req->work.flags & IO_WQ_WORK_BLKCG) &&
+	    (def->work_flags & IO_WQ_WORK_BLKCG)) {
+		rcu_read_lock();
+		id->blkcg_css = blkcg_css();
+		/*
+		 * This should be rare, either the cgroup is dying or the task
+		 * is moving cgroups. Just punt to root for the handful of ios.
+		 */
+		if (css_tryget_online(id->blkcg_css))
+			req->work.flags |= IO_WQ_WORK_BLKCG;
+		rcu_read_unlock();
+	}
+#endif
+	if (!(req->work.flags & IO_WQ_WORK_CREDS)) {
+		id->creds = get_current_cred();
+		req->work.flags |= IO_WQ_WORK_CREDS;
+	}
+	if (!(req->work.flags & IO_WQ_WORK_FS) &&
+	    (def->work_flags & IO_WQ_WORK_FS)) {
+		spin_lock(&current->fs->lock);
+		if (!current->fs->in_exec) {
+			id->fs = current->fs;
+			id->fs->users++;
+			req->work.flags |= IO_WQ_WORK_FS;
+		} else {
+			req->work.flags |= IO_WQ_WORK_CANCEL;
+		}
+		spin_unlock(&current->fs->lock);
+	}
+}
+
 static void io_prep_async_work(struct io_kiocb *req)
 {
 	const struct io_op_def *def = &io_op_defs[req->opcode];
+	struct io_identity *id = &req->identity;
 	struct io_ring_ctx *ctx = req->ctx;
 
 	io_req_init_async(req);
@@ -1205,12 +1292,22 @@ static void io_prep_async_work(struct io_kiocb *req)
 		if (def->unbound_nonreg_file)
 			req->work.flags |= IO_WQ_WORK_UNBOUND;
 	}
+
+	if (def->needs_fsize)
+		req->work.fsize = rlimit(RLIMIT_FSIZE);
+	else
+		req->work.fsize = RLIM_INFINITY;
+
 	if (!(req->work.flags & IO_WQ_WORK_FILES) &&
-	    (io_op_defs[req->opcode].work_flags & IO_WQ_WORK_FILES) &&
+	    (def->work_flags & IO_WQ_WORK_FILES) &&
 	    !(req->flags & REQ_F_NO_FILE_TABLE)) {
-		req->work.identity->files = get_files_struct(current);
-		get_nsproxy(current->nsproxy);
-		req->work.identity->nsproxy = current->nsproxy;
+		if (id->files != current->files)
+			goto cow_id;
+		atomic_inc(&id->files->count);
+
+		if (id->nsproxy != current->nsproxy)
+			goto cow_id;
+		get_nsproxy(id->nsproxy);
 		req->flags |= REQ_F_INFLIGHT;
 
 		spin_lock_irq(&ctx->inflight_lock);
@@ -1220,44 +1317,49 @@ static void io_prep_async_work(struct io_kiocb *req)
 	}
 	if (!(req->work.flags & IO_WQ_WORK_MM) &&
 	    (def->work_flags & IO_WQ_WORK_MM)) {
-		mmgrab(current->mm);
-		req->work.identity->mm = current->mm;
+		mmgrab(id->mm);
 		req->work.flags |= IO_WQ_WORK_MM;
 	}
 #ifdef CONFIG_BLK_CGROUP
 	if (!(req->work.flags & IO_WQ_WORK_BLKCG) &&
 	    (def->work_flags & IO_WQ_WORK_BLKCG)) {
 		rcu_read_lock();
-		req->work.identity->blkcg_css = blkcg_css();
+		if (id->blkcg_css != blkcg_css()) {
+			rcu_read_unlock();
+			goto cow_id;
+		}
 		/*
 		 * This should be rare, either the cgroup is dying or the task
 		 * is moving cgroups. Just punt to root for the handful of ios.
 		 */
-		if (css_tryget_online(req->work.identity->blkcg_css))
+		if (css_tryget_online(id->blkcg_css))
 			req->work.flags |= IO_WQ_WORK_BLKCG;
 		rcu_read_unlock();
 	}
 #endif
 	if (!(req->work.flags & IO_WQ_WORK_CREDS)) {
-		req->work.identity->creds = get_current_cred();
+		if (id->creds != current_cred())
+			goto cow_id;
+		get_cred(id->creds);
 		req->work.flags |= IO_WQ_WORK_CREDS;
 	}
 	if (!(req->work.flags & IO_WQ_WORK_FS) &&
 	    (def->work_flags & IO_WQ_WORK_FS)) {
-		spin_lock(&current->fs->lock);
-		if (!current->fs->in_exec) {
-			req->work.identity->fs = current->fs;
-			req->work.identity->fs->users++;
+		if (current->fs != id->fs)
+			goto cow_id;
+		spin_lock(&id->fs->lock);
+		if (!id->fs->in_exec) {
+			id->fs->users++;
 			req->work.flags |= IO_WQ_WORK_FS;
 		} else {
 			req->work.flags |= IO_WQ_WORK_CANCEL;
 		}
 		spin_unlock(&current->fs->lock);
 	}
-	if (def->needs_fsize)
-		req->work.fsize = rlimit(RLIMIT_FSIZE);
-	else
-		req->work.fsize = RLIM_INFINITY;
+
+	return;
+cow_id:
+	io_identity_cow(req);
 }
 
 static void io_prep_async_link(struct io_kiocb *req)
@@ -1694,14 +1796,23 @@ static void io_dismantle_req(struct io_kiocb *req)
 	io_req_clean_work(req);
 }
 
+static void io_put_identity(struct io_kiocb *req)
+{
+	if (!(req->flags & REQ_F_WORK_INITIALIZED))
+		return;
+	if (req->work.identity == &req->identity)
+		return;
+	if (atomic_dec_and_test(&req->work.identity->count))
+		kfree(req->work.identity);
+}
+
 static void __io_free_req(struct io_kiocb *req)
 {
-	struct io_uring_task *tctx;
-	struct io_ring_ctx *ctx;
+	struct io_uring_task *tctx = req->task->io_uring;
+	struct io_ring_ctx *ctx = req->ctx;
 
+	io_put_identity(req);
 	io_dismantle_req(req);
-	tctx = req->task->io_uring;
-	ctx = req->ctx;
 
 	atomic_long_inc(&tctx->req_complete);
 	if (tctx->in_idle)
@@ -6367,10 +6478,15 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 
 	id = READ_ONCE(sqe->personality);
 	if (id) {
+		struct io_identity *iod;
+
 		io_req_init_async(req);
-		req->work.identity->creds = idr_find(&ctx->personality_idr, id);
-		if (unlikely(!req->work.identity->creds))
+		iod = idr_find(&ctx->personality_idr, id);
+		if (unlikely(!iod))
 			return -EINVAL;
+		atomic_inc(&iod->count);
+		io_put_identity(current->io_uring, req);
+		req->work.identity = iod;
 		get_cred(req->work.identity->creds);
 		req->work.flags |= IO_WQ_WORK_CREDS;
 	}
@@ -8164,11 +8280,14 @@ static int io_uring_fasync(int fd, struct file *file, int on)
 static int io_remove_personalities(int id, void *p, void *data)
 {
 	struct io_ring_ctx *ctx = data;
-	const struct cred *cred;
+	struct io_identity *iod;
 
-	cred = idr_remove(&ctx->personality_idr, id);
-	if (cred)
-		put_cred(cred);
+	iod = idr_remove(&ctx->personality_idr, id);
+	if (iod) {
+		put_cred(iod->creds);
+		if (atomic_dec_and_test(&iod->count))
+			kfree(iod);
+	}
 	return 0;
 }
 
@@ -9238,23 +9357,33 @@ out:
 
 static int io_register_personality(struct io_ring_ctx *ctx)
 {
-	const struct cred *creds = get_current_cred();
-	int id;
+	struct io_identity *id;
+	int ret;
 
-	id = idr_alloc_cyclic(&ctx->personality_idr, (void *) creds, 1,
-				USHRT_MAX, GFP_KERNEL);
-	if (id < 0)
-		put_cred(creds);
-	return id;
+	id = kmalloc(sizeof(*id), GFP_KERNEL);
+	if (unlikely(!id))
+		return -ENOMEM;
+
+	io_init_identity(id);
+	id->creds = get_current_cred();
+
+	ret = idr_alloc_cyclic(&ctx->personality_idr, id, 1, USHRT_MAX, GFP_KERNEL);
+	if (ret < 0) {
+		put_cred(id->creds);
+		kfree(id);
+	}
+	return ret;
 }
 
 static int io_unregister_personality(struct io_ring_ctx *ctx, unsigned id)
 {
-	const struct cred *old_creds;
+	struct io_identity *iod;
 
-	old_creds = idr_remove(&ctx->personality_idr, id);
-	if (old_creds) {
-		put_cred(old_creds);
+	iod = idr_remove(&ctx->personality_idr, id);
+	if (iod) {
+		put_cred(iod->creds);
+		if (atomic_dec_and_test(&iod->count))
+			kfree(iod);
 		return 0;
 	}
 

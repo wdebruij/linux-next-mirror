@@ -14,6 +14,7 @@ struct io_identity {
 	const struct cred		*creds;
 	struct nsproxy			*nsproxy;
 	struct fs_struct		*fs;
+	atomic_t			count;
 };
 
 struct io_uring_task {
