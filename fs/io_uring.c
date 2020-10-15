@@ -1063,12 +1063,18 @@ static void io_init_identity(struct io_identity *id)
  */
 static inline void io_req_init_async(struct io_kiocb *req)
 {
+	struct io_uring_task *tctx = current->io_uring;
+
 	if (req->flags & REQ_F_WORK_INITIALIZED)
 		return;
 
 	memset(&req->work, 0, sizeof(req->work));
 	req->flags |= REQ_F_WORK_INITIALIZED;
-	req->work.identity = &current->io_uring->identity;
+
+	/* Grab a ref if this isn't our static identity */
+	req->work.identity = tctx->identity;
+	if (tctx->identity != &tctx->__identity)
+		atomic_inc(&req->work.identity->count);
 }
 
 static inline bool io_async_submit(struct io_ring_ctx *ctx)
@@ -1215,6 +1221,7 @@ static void io_req_clean_work(struct io_kiocb *req)
 static void io_identity_cow(struct io_kiocb *req)
 {
 	const struct io_op_def *def = &io_op_defs[req->opcode];
+	struct io_uring_task *tctx = current->io_uring;
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_identity *id;
 
@@ -1273,6 +1280,15 @@ static void io_identity_cow(struct io_kiocb *req)
 		}
 		spin_unlock(&current->fs->lock);
 	}
+
+	/* one for request, one for task context */
+	atomic_set(&id->count, 2);
+
+	/* drop old identity, assign new one. one ref for req, one for tctx */
+	if (tctx->identity != &tctx->__identity &&
+	    atomic_sub_and_test(2, &tctx->identity->count))
+		kfree(tctx->identity);
+	tctx->identity = id;
 }
 
 static void io_prep_async_work(struct io_kiocb *req)
@@ -1799,7 +1815,7 @@ static void io_put_identity(struct io_uring_task *tctx, struct io_kiocb *req)
 {
 	if (!(req->flags & REQ_F_WORK_INITIALIZED))
 		return;
-	if (req->work.identity == &tctx->identity)
+	if (req->work.identity == &tctx->__identity)
 		return;
 	if (atomic_dec_and_test(&req->work.identity->count))
 		kfree(req->work.identity);
@@ -7694,7 +7710,8 @@ static int io_uring_alloc_task_context(struct task_struct *task)
 	tctx->in_idle = 0;
 	atomic_long_set(&tctx->req_issue, 0);
 	atomic_long_set(&tctx->req_complete, 0);
-	io_init_identity(&tctx->identity);
+	io_init_identity(&tctx->__identity);
+	tctx->identity = &tctx->__identity;
 	task->io_uring = tctx;
 	return 0;
 }
@@ -7704,6 +7721,9 @@ void __io_uring_free(struct task_struct *tsk)
 	struct io_uring_task *tctx = tsk->io_uring;
 
 	WARN_ON_ONCE(!xa_empty(&tctx->xa));
+	WARN_ON_ONCE(atomic_read(&tctx->identity->count) != 1);
+	if (tctx->identity != &tctx->__identity)
+		kfree(tctx->identity);
 	kfree(tctx);
 	tsk->io_uring = NULL;
 }
