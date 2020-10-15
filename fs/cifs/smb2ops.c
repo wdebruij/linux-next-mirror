@@ -651,7 +651,8 @@ smb2_cached_lease_break(struct work_struct *work)
  * Open the directory at the root of a share
  */
 int open_shroot(unsigned int xid, struct cifs_tcon *tcon,
-		struct cifs_sb_info *cifs_sb, struct cifs_fid *pfid)
+		struct cifs_sb_info *cifs_sb,
+		struct cached_fid **cfid)
 {
 	struct cifs_ses *ses = tcon->ses;
 	struct TCP_Server_Info *server = ses->server;
@@ -666,11 +667,12 @@ int open_shroot(unsigned int xid, struct cifs_tcon *tcon,
 	int rc, flags = 0;
 	__le16 utf16_path = 0; /* Null - since an open of top of share */
 	u8 oplock = SMB2_OPLOCK_LEVEL_II;
+	struct cifs_fid *pfid;
 
 	mutex_lock(&tcon->crfid.fid_mutex);
 	if (tcon->crfid.is_valid) {
 		cifs_dbg(FYI, "found a cached root file handle\n");
-		memcpy(pfid, tcon->crfid.fid, sizeof(struct cifs_fid));
+		*cfid = &tcon->crfid;
 		kref_get(&tcon->crfid.refcount);
 		mutex_unlock(&tcon->crfid.fid_mutex);
 		return 0;
@@ -691,6 +693,7 @@ int open_shroot(unsigned int xid, struct cifs_tcon *tcon,
 	if (!server->ops->new_lease_key)
 		return -EIO;
 
+	pfid = tcon->crfid.fid;
 	server->ops->new_lease_key(pfid);
 
 	memset(rqst, 0, sizeof(rqst));
@@ -820,6 +823,8 @@ oshr_free:
 	SMB2_query_info_free(&rqst[1]);
 	free_rsp_buf(resp_buftype[0], rsp_iov[0].iov_base);
 	free_rsp_buf(resp_buftype[1], rsp_iov[1].iov_base);
+	if (rc == 0)
+		*cfid = &tcon->crfid;
 	return rc;
 }
 
@@ -833,6 +838,7 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon,
 	struct cifs_open_parms oparms;
 	struct cifs_fid fid;
 	bool no_cached_open = tcon->nohandlecache;
+	struct cached_fid *cfid = NULL;
 
 	oparms.tcon = tcon;
 	oparms.desired_access = FILE_READ_ATTRIBUTES;
@@ -841,12 +847,14 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon,
 	oparms.fid = &fid;
 	oparms.reconnect = false;
 
-	if (no_cached_open)
+	if (no_cached_open) {
 		rc = SMB2_open(xid, &oparms, &srch_path, &oplock, NULL, NULL,
 			       NULL, NULL);
-	else
-		rc = open_shroot(xid, tcon, cifs_sb, &fid);
-
+	} else {
+		rc = open_shroot(xid, tcon, cifs_sb, &cfid);
+		if (rc == 0)
+			memcpy(&fid, cfid->fid, sizeof(struct cifs_fid));
+	}
 	if (rc)
 		return;
 
@@ -863,7 +871,7 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon,
 	if (no_cached_open)
 		SMB2_close(xid, tcon, fid.persistent_fid, fid.volatile_fid);
 	else
-		close_shroot(&tcon->crfid);
+		close_shroot(cfid);
 }
 
 static void
@@ -2346,6 +2354,17 @@ smb2_is_session_expired(char *buf)
 	return true;
 }
 
+static bool
+smb2_is_status_io_timeout(char *buf)
+{
+	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+
+	if (shdr->Status == STATUS_IO_TIMEOUT)
+		return true;
+	else
+		return false;
+}
+
 static int
 smb2_oplock_response(struct cifs_tcon *tcon, struct cifs_fid *fid,
 		     struct cifsInodeInfo *cinode)
@@ -3801,10 +3820,10 @@ fill_transform_hdr(struct smb2_transform_hdr *tr_hdr, unsigned int orig_len,
 	tr_hdr->ProtocolId = SMB2_TRANSFORM_PROTO_NUM;
 	tr_hdr->OriginalMessageSize = cpu_to_le32(orig_len);
 	tr_hdr->Flags = cpu_to_le16(0x01);
-	if (cipher_type == SMB2_ENCRYPTION_AES128_GCM)
-		get_random_bytes(&tr_hdr->Nonce, SMB3_AES128GCM_NONCE);
-	else
-		get_random_bytes(&tr_hdr->Nonce, SMB3_AES128CCM_NONCE);
+	if (cipher_type == SMB2_ENCRYPTION_AES128_CCM)
+		get_random_bytes(&tr_hdr->Nonce, SMB3_AES_CCM_NONCE);
+	else /* AES 128 and 256 GCM */
+		get_random_bytes(&tr_hdr->Nonce, SMB3_AES_GCM_NONCE);
 	memcpy(&tr_hdr->SessionId, &shdr->SessionId, 8);
 }
 
@@ -3935,7 +3954,12 @@ crypt_message(struct TCP_Server_Info *server, int num_rqst,
 
 	tfm = enc ? server->secmech.ccmaesencrypt :
 						server->secmech.ccmaesdecrypt;
-	rc = crypto_aead_setkey(tfm, key, SMB3_SIGN_KEY_SIZE);
+
+	if (server->cipher_type == SMB2_ENCRYPTION_AES256_CCM)
+		rc = crypto_aead_setkey(tfm, key, SMB3_GCM256_CRYPTKEY_SIZE);
+	else
+		rc = crypto_aead_setkey(tfm, key, SMB3_SIGN_KEY_SIZE);
+
 	if (rc) {
 		cifs_server_dbg(VFS, "%s: Failed to set aead key %d\n", __func__, rc);
 		return rc;
@@ -3973,12 +3997,11 @@ crypt_message(struct TCP_Server_Info *server, int num_rqst,
 		goto free_sg;
 	}
 
-	if (server->cipher_type == SMB2_ENCRYPTION_AES128_GCM)
-		memcpy(iv, (char *)tr_hdr->Nonce, SMB3_AES128GCM_NONCE);
-	else {
+	if (server->cipher_type == SMB2_ENCRYPTION_AES128_CCM) {
 		iv[0] = 3;
-		memcpy(iv + 1, (char *)tr_hdr->Nonce, SMB3_AES128CCM_NONCE);
-	}
+		memcpy(iv + 1, (char *)tr_hdr->Nonce, SMB3_AES_CCM_NONCE);
+	} else /* AES128 and 256 GCM */
+		memcpy(iv, (char *)tr_hdr->Nonce, SMB3_AES_GCM_NONCE);
 
 	aead_request_set_crypt(req, sg, sg, crypt_len, iv);
 	aead_request_set_ad(req, assoc_data_len);
@@ -4809,6 +4832,7 @@ struct smb_version_operations smb20_operations = {
 	.make_node = smb2_make_node,
 	.fiemap = smb3_fiemap,
 	.llseek = smb3_llseek,
+	.is_status_io_timeout = smb2_is_status_io_timeout,
 };
 
 struct smb_version_operations smb21_operations = {
@@ -4909,6 +4933,7 @@ struct smb_version_operations smb21_operations = {
 	.make_node = smb2_make_node,
 	.fiemap = smb3_fiemap,
 	.llseek = smb3_llseek,
+	.is_status_io_timeout = smb2_is_status_io_timeout,
 };
 
 struct smb_version_operations smb30_operations = {
@@ -5019,6 +5044,7 @@ struct smb_version_operations smb30_operations = {
 	.make_node = smb2_make_node,
 	.fiemap = smb3_fiemap,
 	.llseek = smb3_llseek,
+	.is_status_io_timeout = smb2_is_status_io_timeout,
 };
 
 struct smb_version_operations smb311_operations = {
@@ -5130,6 +5156,7 @@ struct smb_version_operations smb311_operations = {
 	.make_node = smb2_make_node,
 	.fiemap = smb3_fiemap,
 	.llseek = smb3_llseek,
+	.is_status_io_timeout = smb2_is_status_io_timeout,
 };
 
 struct smb_version_values smb20_values = {
