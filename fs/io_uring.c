@@ -689,7 +689,6 @@ struct io_kiocb {
 	struct hlist_node		hash_node;
 	struct async_poll		*apoll;
 	struct io_wq_work		work;
-	struct io_identity		identity;
 };
 
 struct io_defer_entry {
@@ -1069,8 +1068,7 @@ static inline void io_req_init_async(struct io_kiocb *req)
 
 	memset(&req->work, 0, sizeof(req->work));
 	req->flags |= REQ_F_WORK_INITIALIZED;
-	io_init_identity(&req->identity);
-	req->work.identity = &req->identity;
+	req->work.identity = &current->io_uring->identity;
 }
 
 static inline bool io_async_submit(struct io_ring_ctx *ctx)
@@ -1280,10 +1278,11 @@ static void io_identity_cow(struct io_kiocb *req)
 static void io_prep_async_work(struct io_kiocb *req)
 {
 	const struct io_op_def *def = &io_op_defs[req->opcode];
-	struct io_identity *id = &req->identity;
 	struct io_ring_ctx *ctx = req->ctx;
+	struct io_identity *id;
 
 	io_req_init_async(req);
+	id = req->work.identity;
 
 	if (req->flags & REQ_F_ISREG) {
 		if (def->hash_reg_file || (ctx->flags & IORING_SETUP_IOPOLL))
@@ -1796,11 +1795,11 @@ static void io_dismantle_req(struct io_kiocb *req)
 	io_req_clean_work(req);
 }
 
-static void io_put_identity(struct io_kiocb *req)
+static void io_put_identity(struct io_uring_task *tctx, struct io_kiocb *req)
 {
 	if (!(req->flags & REQ_F_WORK_INITIALIZED))
 		return;
-	if (req->work.identity == &req->identity)
+	if (req->work.identity == &tctx->identity)
 		return;
 	if (atomic_dec_and_test(&req->work.identity->count))
 		kfree(req->work.identity);
@@ -1811,7 +1810,7 @@ static void __io_free_req(struct io_kiocb *req)
 	struct io_uring_task *tctx = req->task->io_uring;
 	struct io_ring_ctx *ctx = req->ctx;
 
-	io_put_identity(req);
+	io_put_identity(tctx, req);
 	io_dismantle_req(req);
 
 	atomic_long_inc(&tctx->req_complete);
@@ -7695,6 +7694,7 @@ static int io_uring_alloc_task_context(struct task_struct *task)
 	tctx->in_idle = 0;
 	atomic_long_set(&tctx->req_issue, 0);
 	atomic_long_set(&tctx->req_complete, 0);
+	io_init_identity(&tctx->identity);
 	task->io_uring = tctx;
 	return 0;
 }
