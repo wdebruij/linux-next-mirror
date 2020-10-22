@@ -4605,6 +4605,14 @@ L:	linux-arm-kernel@lists.infradead.org
 S:	Supported
 F:	drivers/cpuidle/cpuidle-psci.c
 
+CPUIDLE DRIVER - ARM PSCI PM DOMAIN
+M:	Ulf Hansson <ulf.hansson@linaro.org>
+L:	linux-pm@vger.kernel.org
+L:	linux-arm-kernel@lists.infradead.org
+S:	Supported
+F:	drivers/cpuidle/cpuidle-psci.h
+F:	drivers/cpuidle/cpuidle-psci-domain.c
+
 CRAMFS FILESYSTEM
 M:	Nicolas Pitre <nico@fluxnic.net>
 S:	Maintained
@@ -5418,11 +5426,11 @@ F:	include/linux/debugfs.h
 F:	include/linux/kobj*
 F:	lib/kobj*
 
-DRIVERS FOR ADAPTIVE VOLTAGE SCALING (AVS)
+DRIVERS FOR OMAP ADAPTIVE VOLTAGE SCALING (AVS)
 M:	Nishanth Menon <nm@ti.com>
 L:	linux-pm@vger.kernel.org
 S:	Maintained
-F:	drivers/power/avs/
+F:	drivers/soc/ti/smartreflex.c
 F:	include/linux/power/smartreflex.h
 
 DRM DRIVER FOR ALLWINNER DE2 AND DE3 ENGINE
