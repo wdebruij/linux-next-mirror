@@ -51,8 +51,6 @@ static inline s64 div_frac(s64 x, s64 y)
 
 /**
  * struct power_allocator_params - parameters for the power allocator governor
- * @allocated_tzp:	whether we have allocated tzp for this thermal zone and
- *			it needs to be freed on unbind
  * @err_integral:	accumulated error in the PID controller.
  * @prev_err:	error in the previous iteration of the PID controller.
  *		Used to calculate the derivative term.
@@ -65,7 +63,6 @@ static inline s64 div_frac(s64 x, s64 y)
  *					controlling for.
  */
 struct power_allocator_params {
-	bool allocated_tzp;
 	s64 err_integral;
 	s32 prev_err;
 	int trip_switch_on;
@@ -556,8 +553,6 @@ static int power_allocator_bind(struct thermal_zone_device *tz)
 			ret = -ENOMEM;
 			goto free_params;
 		}
-
-		params->allocated_tzp = true;
 	}
 
 	if (!tz->tzp->sustainable_power)
@@ -593,10 +588,8 @@ static void power_allocator_unbind(struct thermal_zone_device *tz)
 
 	dev_dbg(&tz->device, "Unbinding from thermal zone %d\n", tz->id);
 
-	if (params->allocated_tzp) {
-		kfree(tz->tzp);
-		tz->tzp = NULL;
-	}
+	kfree(tz->tzp);
+	tz->tzp = NULL;
 
 	kfree(tz->governor_data);
 	tz->governor_data = NULL;
