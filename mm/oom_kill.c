@@ -171,8 +171,8 @@ static bool oom_unkillable_task(struct task_struct *p)
 }
 
 /*
- * Print out unreclaimble slabs info when unreclaimable slabs amount is greater
- * than all user memory (LRU pages)
+ * Check whether unreclaimable slabs amount is greater than
+ * all user memory(LRU pages).
  */
 static bool is_dump_unreclaim_slabs(void)
 {
