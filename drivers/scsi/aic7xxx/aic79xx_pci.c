@@ -419,7 +419,7 @@ ahd_pci_test_register_access(struct ahd_softc *ahd)
 	int	 error;
 	uint8_t	 hcntrl;
 
-	error = EIO;
+	error = -EIO;
 
 	/*
 	 * Enable PCI error interrupt status, but suppress NMIs
