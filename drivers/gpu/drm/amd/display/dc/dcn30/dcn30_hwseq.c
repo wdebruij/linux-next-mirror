@@ -617,11 +617,18 @@ void dcn30_init_hw(struct dc *dc)
 	if (hws->funcs.enable_power_gating_plane)
 		hws->funcs.enable_power_gating_plane(dc->hwseq, true);
 
+	if (!dcb->funcs->is_accelerated_mode(dcb) && dc->res_pool->hubbub->funcs->init_watermarks)
+		dc->res_pool->hubbub->funcs->init_watermarks(dc->res_pool->hubbub);
+
 	if (dc->clk_mgr->funcs->notify_wm_ranges)
 		dc->clk_mgr->funcs->notify_wm_ranges(dc->clk_mgr);
 
 	if (dc->clk_mgr->funcs->set_hard_max_memclk)
 		dc->clk_mgr->funcs->set_hard_max_memclk(dc->clk_mgr);
+
+	if (dc->res_pool->hubbub->funcs->force_pstate_change_control)
+		dc->res_pool->hubbub->funcs->force_pstate_change_control(
+				dc->res_pool->hubbub, false, false);
 }
 
 void dcn30_set_avmute(struct pipe_ctx *pipe_ctx, bool enable)
@@ -689,6 +696,10 @@ void dcn30_program_dmdata_engine(struct pipe_ctx *pipe_ctx)
 
 bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 {
+	union dmub_rb_cmd cmd;
+	unsigned int surface_size, refresh_hz, denom;
+	uint32_t tmr_delay = 0, tmr_scale = 0;
+
 	if (!dc->ctx->dmub_srv)
 		return false;
 
@@ -703,11 +714,98 @@ bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 					/* Fail eligibility on a visible stream */
 					break;
 			}
+
+			if (dc->current_state->stream_count == 1 // single display only
+			    && dc->current_state->stream_status[0].plane_count == 1 // single surface only
+			    && dc->current_state->stream_status[0].plane_states[0]->address.page_table_base.quad_part == 0 // no VM
+			    // Only 8 and 16 bit formats
+			    && dc->current_state->stream_status[0].plane_states[0]->format <= SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F
+			    && dc->current_state->stream_status[0].plane_states[0]->format >= SURFACE_PIXEL_FORMAT_GRPH_ARGB8888) {
+				surface_size = dc->current_state->stream_status[0].plane_states[0]->plane_size.surface_pitch *
+					dc->current_state->stream_status[0].plane_states[0]->plane_size.surface_size.height *
+					(dc->current_state->stream_status[0].plane_states[0]->format >= SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616 ?
+					 8 : 4);
+			} else {
+				// TODO: remove hard code size
+				surface_size = 128 * 1024 * 1024;
+			}
+
+			// TODO: remove hard code size
+			if (surface_size < 128 * 1024 * 1024) {
+				refresh_hz = div_u64((unsigned long long) dc->current_state->streams[0]->timing.pix_clk_100hz *
+						     100LL,
+						     (dc->current_state->streams[0]->timing.v_total *
+						      dc->current_state->streams[0]->timing.h_total));
+
+				/*
+				 * Delay_Us = 65.28 * (64 + MallFrameCacheTmrDly) * 2^MallFrameCacheTmrScale
+				 * Delay_Us / 65.28 = (64 + MallFrameCacheTmrDly) * 2^MallFrameCacheTmrScale
+				 * (Delay_Us / 65.28) / 2^MallFrameCacheTmrScale = 64 + MallFrameCacheTmrDly
+				 * MallFrameCacheTmrDly = ((Delay_Us / 65.28) / 2^MallFrameCacheTmrScale) - 64
+				 *                      = (1000000 / refresh) / 65.28 / 2^MallFrameCacheTmrScale - 64
+				 *                      = 1000000 / (refresh * 65.28 * 2^MallFrameCacheTmrScale) - 64
+				 *                      = (1000000 * 100) / (refresh * 6528 * 2^MallFrameCacheTmrScale) - 64
+				 *
+				 * need to round up the result of the division before the subtraction
+				 */
+				denom = refresh_hz * 6528;
+				tmr_delay = div_u64((100000000LL + denom - 1), denom) - 64LL;
+
+				/* scale should be increased until it fits into 6 bits */
+				while (tmr_delay & ~0x3F) {
+					tmr_scale++;
+
+					if (tmr_scale > 3) {
+						/* The delay exceeds the range of the hystersis timer */
+						ASSERT(false);
+						return false;
+					}
+
+					denom *= 2;
+					tmr_delay = div_u64((100000000LL + denom - 1), denom) - 64LL;
+				}
+
+				/* Enable MALL */
+				memset(&cmd, 0, sizeof(cmd));
+				cmd.mall.header.type = DMUB_CMD__MALL;
+				cmd.mall.header.sub_type =
+					DMUB_CMD__MALL_ACTION_ALLOW;
+				cmd.mall.header.payload_bytes =
+					sizeof(cmd.mall) -
+					sizeof(cmd.mall.header);
+				cmd.mall.tmr_delay = tmr_delay;
+				cmd.mall.tmr_scale = tmr_scale;
+
+				dc_dmub_srv_cmd_queue(dc->ctx->dmub_srv, &cmd);
+				dc_dmub_srv_cmd_execute(dc->ctx->dmub_srv);
+
+				return true;
+			}
 		}
 
 		/* No applicable optimizations */
 		return false;
 	}
 
+	/* Disable MALL */
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.mall.header.type = DMUB_CMD__MALL;
+	cmd.mall.header.sub_type = DMUB_CMD__MALL_ACTION_DISALLOW;
+	cmd.mall.header.payload_bytes =
+		sizeof(cmd.mall) - sizeof(cmd.mall.header);
+
+	dc_dmub_srv_cmd_queue(dc->ctx->dmub_srv, &cmd);
+	dc_dmub_srv_cmd_execute(dc->ctx->dmub_srv);
+	dc_dmub_srv_wait_idle(dc->ctx->dmub_srv);
+
 	return true;
+}
+
+void dcn30_hardware_release(struct dc *dc)
+{
+	/* if pstate unsupported, force it supported */
+	if (!dc->clk_mgr->clks.p_state_change_support &&
+			dc->res_pool->hubbub->funcs->force_pstate_change_control)
+		dc->res_pool->hubbub->funcs->force_pstate_change_control(
+				dc->res_pool->hubbub, true, true);
 }
