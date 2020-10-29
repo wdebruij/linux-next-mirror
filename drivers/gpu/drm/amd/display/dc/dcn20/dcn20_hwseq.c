@@ -611,7 +611,6 @@ void dcn20_disable_plane(struct dc *dc, struct pipe_ctx *pipe_ctx)
 					pipe_ctx->pipe_idx);
 }
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 static int calc_mpc_flow_ctrl_cnt(const struct dc_stream_state *stream,
 		int opp_cnt)
 {
@@ -634,7 +633,6 @@ static int calc_mpc_flow_ctrl_cnt(const struct dc_stream_state *stream,
 
 	return flow_ctrl_cnt;
 }
-#endif
 
 enum dc_status dcn20_enable_stream_timing(
 		struct pipe_ctx *pipe_ctx,
@@ -648,16 +646,12 @@ enum dc_status dcn20_enable_stream_timing(
 	struct pipe_ctx *odm_pipe;
 	int opp_cnt = 1;
 	int opp_inst[MAX_PIPES] = { pipe_ctx->stream_res.opp->inst };
-
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 	bool interlace = stream->timing.flags.INTERLACE;
 	int i;
-
 	struct mpc_dwb_flow_control flow_control;
 	struct mpc *mpc = dc->res_pool->mpc;
 	bool rate_control_2x_pclk = (interlace || optc2_is_two_pixels_per_containter(&stream->timing));
 
-#endif
 	/* by upper caller loop, pipe0 is parent pipe and be called first.
 	 * back end is set up by for pipe0. Other children pipe share back end
 	 * with pipe 0. No program is needed.
@@ -704,7 +698,6 @@ enum dc_status dcn20_enable_stream_timing(
 			pipe_ctx->stream->signal,
 			true);
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 	rate_control_2x_pclk = rate_control_2x_pclk || opp_cnt > 1;
 	flow_control.flow_ctrl_mode = 0;
 	flow_control.flow_ctrl_cnt0 = 0x80;
@@ -718,7 +711,7 @@ enum dc_status dcn20_enable_stream_timing(
 					&flow_control);
 		}
 	}
-#endif
+
 	for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe)
 		odm_pipe->stream_res.opp->funcs->opp_pipe_clock_control(
 				odm_pipe->stream_res.opp,
@@ -1191,7 +1184,7 @@ void dcn20_pipe_control_lock(
 	/* In flip immediate and pipe splitting case, we need to use GSL
 	 * for synchronization. Only do setup on locking and on flip type change.
 	 */
-	if (lock && pipe->bottom_pipe != NULL)
+	if (lock && (pipe->bottom_pipe != NULL || !flip_immediate))
 		if ((flip_immediate && pipe->stream_res.gsl_group == 0) ||
 		    (!flip_immediate && pipe->stream_res.gsl_group > 0))
 			dcn20_setup_gsl_group_as_lock(dc, pipe, flip_immediate);
@@ -1478,7 +1471,6 @@ static void dcn20_update_dchubp_dpp(
 	if (pipe_ctx->update_flags.bits.enable || pipe_ctx->update_flags.bits.opp_changed
 			|| pipe_ctx->stream->update_flags.bits.gamut_remap
 			|| pipe_ctx->stream->update_flags.bits.out_csc) {
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 		struct mpc *mpc = pipe_ctx->stream_res.opp->ctx->dc->res_pool->mpc;
 
 		if (mpc->funcs->set_gamut_remap) {
@@ -1509,7 +1501,6 @@ static void dcn20_update_dchubp_dpp(
 			}
 			mpc->funcs->set_gamut_remap(mpc, mpcc_id, &adjust);
 		} else
-#endif
 			/* dpp/cm gamut remap*/
 			dc->hwss.program_gamut_remap(pipe_ctx);
 
@@ -2034,6 +2025,8 @@ static bool patch_address_for_sbs_tb_stereo(
 		plane_state->address.type = PLN_ADDR_TYPE_GRPH_STEREO;
 		plane_state->address.grph_stereo.right_addr =
 				plane_state->address.grph_stereo.left_addr;
+		plane_state->address.grph_stereo.right_meta_addr =
+				plane_state->address.grph_stereo.left_meta_addr;
 	}
 	return false;
 }
@@ -2282,11 +2275,9 @@ void dcn20_update_mpcc(struct dc *dc, struct pipe_ctx *pipe_ctx)
 	blnd_cfg.bottom_inside_gain = 0x1f000;
 	blnd_cfg.bottom_outside_gain = 0x1f000;
 	blnd_cfg.pre_multiplied_alpha = per_pixel_alpha;
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
 	if (pipe_ctx->plane_state->format
 			== SURFACE_PIXEL_FORMAT_GRPH_RGBE_ALPHA)
 		blnd_cfg.pre_multiplied_alpha = false;
-#endif
 
 	/*
 	 * TODO: remove hack
