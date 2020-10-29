@@ -4119,8 +4119,8 @@ static int memcg_stat_show(struct seq_file *m, void *v)
 		if (memcg1_stats[i] == NR_ANON_THPS)
 			nr *= HPAGE_PMD_NR;
 #endif
-		seq_printf(m, "total_%s %lu\n", memcg1_stat_names[i],
-						nr * PAGE_SIZE);
+		seq_printf(m, "total_%s %llu\n", memcg1_stat_names[i],
+						(u64)nr * PAGE_SIZE);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(memcg1_events); i++)
