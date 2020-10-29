@@ -137,20 +137,6 @@ static inline bool dma_map_direct(struct device *dev,
 	return dma_go_direct(dev, *dev->dma_mask, ops);
 }
 
-#ifdef CONFIG_ARCH_HAS_DMA_MAP_DIRECT
-bool arch_dma_map_page_direct(struct device *dev, phys_addr_t addr);
-bool arch_dma_unmap_page_direct(struct device *dev, dma_addr_t dma_handle);
-bool arch_dma_map_sg_direct(struct device *dev, struct scatterlist *sg,
-			    int nents);
-bool arch_dma_unmap_sg_direct(struct device *dev, struct scatterlist *sg,
-			      int nents);
-#else
-#define arch_dma_map_page_direct(d, a) (0)
-#define arch_dma_unmap_page_direct(d, a) (0)
-#define arch_dma_map_sg_direct(d, s, n) (0)
-#define arch_dma_unmap_sg_direct(d, s, n) (0)
-#endif
-
 dma_addr_t dma_map_page_attrs(struct device *dev, struct page *page,
 		size_t offset, size_t size, enum dma_data_direction dir,
 		unsigned long attrs)
