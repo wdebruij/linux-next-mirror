@@ -24,6 +24,18 @@
 	cpu-supply = <&buck2_reg>;
 };
 
+&A53_1 {
+	cpu-supply = <&buck2_reg>;
+};
+
+&A53_2 {
+	cpu-supply = <&buck2_reg>;
+};
+
+&A53_3 {
+	cpu-supply = <&buck2_reg>;
+};
+
 &ddrc {
 	operating-points-v2 = <&ddrc_opp_table>;
 
@@ -60,6 +72,22 @@
 			compatible = "ethernet-phy-ieee802.3-c22";
 			reg = <0>;
 		};
+	};
+};
+
+&flexspi {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_flexspi>;
+	status = "okay";
+
+	flash@0 {
+		reg = <0>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		spi-max-frequency = <80000000>;
+		spi-tx-bus-width = <4>;
+		spi-rx-bus-width = <4>;
 	};
 };
 
@@ -292,6 +320,17 @@
 			>;
 		};
 
+		pinctrl_flexspi: flexspigrp {
+			fsl,pins = <
+				MX8MM_IOMUXC_NAND_ALE_QSPI_A_SCLK               0x1c2
+				MX8MM_IOMUXC_NAND_CE0_B_QSPI_A_SS0_B            0x82
+				MX8MM_IOMUXC_NAND_DATA00_QSPI_A_DATA0           0x82
+				MX8MM_IOMUXC_NAND_DATA01_QSPI_A_DATA1           0x82
+				MX8MM_IOMUXC_NAND_DATA02_QSPI_A_DATA2           0x82
+				MX8MM_IOMUXC_NAND_DATA03_QSPI_A_DATA3           0x82
+			>;
+		};
+
 		pinctrl_pmic: pmicirqgrp {
 			fsl,pins = <
 				MX8MM_IOMUXC_GPIO1_IO03_GPIO1_IO3	0x141
@@ -400,7 +439,7 @@
 
 		pinctrl_wdog: wdoggrp {
 			fsl,pins = <
-				MX8MM_IOMUXC_GPIO1_IO02_WDOG1_WDOG_B		0xc6
+				MX8MM_IOMUXC_GPIO1_IO02_WDOG1_WDOG_B		0x166
 			>;
 		};
 
