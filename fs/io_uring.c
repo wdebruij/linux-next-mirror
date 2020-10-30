@@ -1067,6 +1067,7 @@ static void io_init_identity(struct io_identity *id)
 	id->loginuid = current->loginuid;
 	id->sessionid = current->sessionid;
 #endif
+	id->pid = current->thread_pid;
 	refcount_set(&id->count, 1);
 }
 
@@ -1300,10 +1301,12 @@ static bool io_grab_identity(struct io_kiocb *req)
 	    (def->work_flags & IO_WQ_WORK_FILES) &&
 	    !(req->flags & REQ_F_NO_FILE_TABLE)) {
 		if (id->files != current->files ||
-		    id->nsproxy != current->nsproxy)
+		    id->nsproxy != current->nsproxy ||
+		    id->pid != current->thread_pid)
 			return false;
 		atomic_inc(&id->files->count);
 		get_nsproxy(id->nsproxy);
+		get_pid(id->pid);
 		req->flags |= REQ_F_INFLIGHT;
 
 		spin_lock_irq(&ctx->inflight_lock);
@@ -5814,6 +5817,7 @@ static void io_req_drop_files(struct io_kiocb *req)
 	req->flags &= ~REQ_F_INFLIGHT;
 	put_files_struct(req->work.identity->files);
 	put_nsproxy(req->work.identity->nsproxy);
+	put_pid(req->work.identity->pid);
 	req->work.flags &= ~IO_WQ_WORK_FILES;
 }
 

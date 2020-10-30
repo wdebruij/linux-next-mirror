@@ -13,6 +13,7 @@ struct io_identity {
 #endif
 	const struct cred		*creds;
 	struct nsproxy			*nsproxy;
+	struct pid			*pid;
 	struct fs_struct		*fs;
 	unsigned long			fsize;
 #ifdef CONFIG_AUDIT
