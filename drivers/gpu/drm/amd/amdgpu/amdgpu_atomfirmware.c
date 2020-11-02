@@ -149,6 +149,10 @@ static int convert_atom_mem_type_to_vram_type(struct amdgpu_device *adev,
 		case LpDdr4MemType:
 			vram_type = AMDGPU_VRAM_TYPE_DDR4;
 			break;
+		case Ddr5MemType:
+		case LpDdr5MemType:
+			vram_type = AMDGPU_VRAM_TYPE_DDR5;
+			break;
 		default:
 			vram_type = AMDGPU_VRAM_TYPE_UNKNOWN;
 			break;
@@ -544,6 +548,7 @@ int amdgpu_mem_train_support(struct amdgpu_device *adev)
 		case HW_REV(11, 0, 5):
 		case HW_REV(11, 0, 7):
 		case HW_REV(11, 0, 11):
+		case HW_REV(11, 0, 12):
 			ret = 1;
 			break;
 		default:

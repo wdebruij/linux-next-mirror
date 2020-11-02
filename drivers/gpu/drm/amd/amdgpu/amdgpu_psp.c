@@ -100,6 +100,8 @@ static int psp_early_init(void *handle)
 	case CHIP_NAVI12:
 	case CHIP_SIENNA_CICHLID:
 	case CHIP_NAVY_FLOUNDER:
+	case CHIP_VANGOGH:
+	case CHIP_DIMGREY_CAVEFISH:
 		psp_v11_0_set_psp_funcs(psp);
 		psp->autoload_supported = true;
 		break;
@@ -288,6 +290,8 @@ psp_cmd_submit_buf(struct psp_context *psp,
 	skip_unsupport = (psp->cmd_buf_mem->resp.status == TEE_ERROR_NOT_SUPPORTED ||
 		psp->cmd_buf_mem->resp.status == PSP_ERR_UNKNOWN_COMMAND) && amdgpu_sriov_vf(psp->adev);
 
+	memcpy((void*)&cmd->resp, (void*)&psp->cmd_buf_mem->resp, sizeof(struct psp_gfx_resp));
+
 	/* In some cases, psp response status is not 0 even there is no
 	 * problem while the command is submitted. Some version of PSP FW
 	 * doesn't write 0 to that field.
@@ -307,9 +311,6 @@ psp_cmd_submit_buf(struct psp_context *psp,
 			return -EINVAL;
 		}
 	}
-
-	/* get xGMI session id from response buffer */
-	cmd->resp.session_id = psp->cmd_buf_mem->resp.session_id;
 
 	if (ucode) {
 		ucode->tmr_mc_addr_lo = psp->cmd_buf_mem->resp.fw_addr_lo;
@@ -507,6 +508,37 @@ static int psp_tmr_terminate(struct psp_context *psp)
 	amdgpu_bo_free_kernel(&psp->tmr_bo, &psp->tmr_mc_addr, pptr);
 
 	return 0;
+}
+
+int psp_get_fw_attestation_records_addr(struct psp_context *psp,
+					uint64_t *output_ptr)
+{
+	int ret;
+	struct psp_gfx_cmd_resp *cmd;
+
+	if (!output_ptr)
+		return -EINVAL;
+
+	if (amdgpu_sriov_vf(psp->adev))
+		return 0;
+
+	cmd = kzalloc(sizeof(struct psp_gfx_cmd_resp), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->cmd_id = GFX_CMD_ID_GET_FW_ATTESTATION;
+
+	ret = psp_cmd_submit_buf(psp, NULL, cmd,
+				 psp->fence_buf_mc_addr);
+
+	if (!ret) {
+		*output_ptr = ((uint64_t)cmd->resp.uresp.fwar_db_info.fwar_db_addr_lo) +
+			      ((uint64_t)cmd->resp.uresp.fwar_db_info.fwar_db_addr_hi << 32);
+	}
+
+	kfree(cmd);
+
+	return ret;
 }
 
 static void psp_prep_asd_load_cmd_buf(struct psp_gfx_cmd_resp *cmd,
@@ -1974,8 +2006,8 @@ static int psp_np_fw_load(struct psp_context *psp)
 			continue;
 
 		if (psp->autoload_supported &&
-		    (adev->asic_type == CHIP_SIENNA_CICHLID ||
-		     adev->asic_type == CHIP_NAVY_FLOUNDER) &&
+		    (adev->asic_type >= CHIP_SIENNA_CICHLID &&
+		     adev->asic_type <= CHIP_DIMGREY_CAVEFISH) &&
 		    (ucode->ucode_id == AMDGPU_UCODE_ID_SDMA1 ||
 		     ucode->ucode_id == AMDGPU_UCODE_ID_SDMA2 ||
 		     ucode->ucode_id == AMDGPU_UCODE_ID_SDMA3))
@@ -2390,7 +2422,7 @@ int psp_init_asd_microcode(struct psp_context *psp,
 			   const char *chip_name)
 {
 	struct amdgpu_device *adev = psp->adev;
-	char fw_name[30];
+	char fw_name[PSP_FW_NAME_LEN];
 	const struct psp_firmware_header_v1_0 *asd_hdr;
 	int err = 0;
 
@@ -2422,11 +2454,47 @@ out:
 	return err;
 }
 
-int psp_init_sos_microcode(struct psp_context *psp,
+int psp_init_toc_microcode(struct psp_context *psp,
 			   const char *chip_name)
 {
 	struct amdgpu_device *adev = psp->adev;
 	char fw_name[30];
+	const struct psp_firmware_header_v1_0 *toc_hdr;
+	int err = 0;
+
+	if (!chip_name) {
+		dev_err(adev->dev, "invalid chip name for toc microcode\n");
+		return -EINVAL;
+	}
+
+	snprintf(fw_name, sizeof(fw_name), "amdgpu/%s_toc.bin", chip_name);
+	err = request_firmware(&adev->psp.toc_fw, fw_name, adev->dev);
+	if (err)
+		goto out;
+
+	err = amdgpu_ucode_validate(adev->psp.toc_fw);
+	if (err)
+		goto out;
+
+	toc_hdr = (const struct psp_firmware_header_v1_0 *)adev->psp.toc_fw->data;
+	adev->psp.toc_fw_version = le32_to_cpu(toc_hdr->header.ucode_version);
+	adev->psp.toc_feature_version = le32_to_cpu(toc_hdr->ucode_feature_version);
+	adev->psp.toc_bin_size = le32_to_cpu(toc_hdr->header.ucode_size_bytes);
+	adev->psp.toc_start_addr = (uint8_t *)toc_hdr +
+				le32_to_cpu(toc_hdr->header.ucode_array_offset_bytes);
+	return 0;
+out:
+	dev_err(adev->dev, "fail to request/validate toc microcode\n");
+	release_firmware(adev->psp.toc_fw);
+	adev->psp.toc_fw = NULL;
+	return err;
+}
+
+int psp_init_sos_microcode(struct psp_context *psp,
+			   const char *chip_name)
+{
+	struct amdgpu_device *adev = psp->adev;
+	char fw_name[PSP_FW_NAME_LEN];
 	const struct psp_firmware_header_v1_0 *sos_hdr;
 	const struct psp_firmware_header_v1_1 *sos_hdr_v1_1;
 	const struct psp_firmware_header_v1_2 *sos_hdr_v1_2;

@@ -70,6 +70,8 @@
 
 #include "dce/dmub_hw_lock_mgr.h"
 
+#include "dc_trace.h"
+
 #define CTX \
 	dc->ctx
 
@@ -731,7 +733,7 @@ static bool dc_construct(struct dc *dc,
 	dc->clk_mgr = dc_clk_mgr_create(dc->ctx, dc->res_pool->pp_smu, dc->res_pool->dccg);
 	if (!dc->clk_mgr)
 		goto fail;
-#ifdef CONFIG_DRM_AMD_DC_DCN3_0
+#ifdef CONFIG_DRM_AMD_DC_DCN
 	dc->clk_mgr->force_smu_not_present = init_params->force_smu_not_present;
 #endif
 
@@ -763,7 +765,7 @@ fail:
 	return false;
 }
 
-static bool disable_all_writeback_pipes_for_stream(
+static void disable_all_writeback_pipes_for_stream(
 		const struct dc *dc,
 		struct dc_stream_state *stream,
 		struct dc_state *context)
@@ -772,8 +774,6 @@ static bool disable_all_writeback_pipes_for_stream(
 
 	for (i = 0; i < stream->num_wb_info; i++)
 		stream->writeback_info[i].wb_enabled = false;
-
-	return true;
 }
 
 void apply_ctx_interdependent_lock(struct dc *dc, struct dc_state *context, struct dc_stream_state *stream, bool lock)
@@ -1266,16 +1266,19 @@ bool dc_validate_seamless_boot_timing(const struct dc *dc,
 			return false;
 	}
 
+	if (link->dpcd_caps.dprx_feature.bits.VSC_SDP_COLORIMETRY_SUPPORTED) {
+		return false;
+	}
+
 	return true;
 }
 
-bool dc_enable_stereo(
+void dc_enable_stereo(
 	struct dc *dc,
 	struct dc_state *context,
 	struct dc_stream_state *streams[],
 	uint8_t stream_count)
 {
-	bool ret = true;
 	int i, j;
 	struct pipe_ctx *pipe;
 
@@ -1290,8 +1293,6 @@ bool dc_enable_stereo(
 				dc->hwss.setup_stereo(pipe, dc);
 		}
 	}
-
-	return ret;
 }
 
 void dc_trigger_sync(struct dc *dc, struct dc_state *context)
@@ -1327,7 +1328,7 @@ static enum dc_status dc_commit_state_no_check(struct dc *dc, struct dc_state *c
 	int i, k, l;
 	struct dc_stream_state *dc_streams[MAX_STREAMS] = {0};
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 	dc_allow_idle_optimizations(dc, false);
 #endif
 
@@ -1434,6 +1435,11 @@ static enum dc_status dc_commit_state_no_check(struct dc *dc, struct dc_state *c
 		dc->hwss.optimize_bandwidth(dc, context);
 	}
 
+	if (dc->ctx->dce_version >= DCE_VERSION_MAX)
+		TRACE_DCN_CLOCK_STATE(&context->bw_ctx.bw.dcn.clk);
+	else
+		TRACE_DCE_CLOCK_STATE(&context->bw_ctx.bw.dce);
+
 	context->stream_mask = get_stream_mask(dc, context);
 
 	if (context->stream_mask != dc->current_state->stream_mask)
@@ -1473,7 +1479,7 @@ bool dc_commit_state(struct dc *dc, struct dc_state *context)
 	return (result == DC_OK);
 }
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 bool dc_acquire_release_mpc_3dlut(
 		struct dc *dc, bool acquire,
 		struct dc_stream_state *stream,
@@ -1530,18 +1536,18 @@ static bool is_flip_pending_in_pipes(struct dc *dc, struct dc_state *context)
 	return false;
 }
 
-bool dc_post_update_surfaces_to_stream(struct dc *dc)
+void dc_post_update_surfaces_to_stream(struct dc *dc)
 {
 	int i;
 	struct dc_state *context = dc->current_state;
 
 	if ((!dc->optimized_required) || dc->optimize_seamless_boot_streams > 0)
-		return true;
+		return;
 
 	post_surface_trace(dc);
 
 	if (is_flip_pending_in_pipes(dc, context))
-		return true;
+		return;
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++)
 		if (context->res_ctx.pipe_ctx[i].stream == NULL ||
@@ -1554,8 +1560,6 @@ bool dc_post_update_surfaces_to_stream(struct dc *dc)
 
 	dc->optimized_required = false;
 	dc->wm_optimized_required = false;
-
-	return true;
 }
 
 static void init_state(struct dc *dc, struct dc_state *context)
@@ -1929,7 +1933,7 @@ static enum surface_update_type check_update_surfaces_for_stream(
 	int i;
 	enum surface_update_type overall_type = UPDATE_TYPE_FAST;
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 	if (dc->idle_optimizations_allowed)
 		overall_type = UPDATE_TYPE_FULL;
 
@@ -2383,7 +2387,6 @@ static void commit_planes_for_stream(struct dc *dc,
 		enum surface_update_type update_type,
 		struct dc_state *context)
 {
-	bool mpcc_disconnected = false;
 	int i, j;
 	struct pipe_ctx *top_pipe_to_program = NULL;
 
@@ -2404,7 +2407,7 @@ static void commit_planes_for_stream(struct dc *dc,
 	}
 
 	if (update_type == UPDATE_TYPE_FULL) {
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 		dc_allow_idle_optimizations(dc, false);
 
 #endif
@@ -2412,15 +2415,6 @@ static void commit_planes_for_stream(struct dc *dc,
 			dc->hwss.prepare_bandwidth(dc, context);
 
 		context_clock_trace(dc, context);
-	}
-
-	if (update_type != UPDATE_TYPE_FAST && dc->hwss.interdependent_update_lock &&
-		dc->hwss.disconnect_pipes && dc->hwss.wait_for_pending_cleared){
-		dc->hwss.interdependent_update_lock(dc, context, true);
-		mpcc_disconnected = dc->hwss.disconnect_pipes(dc, context);
-		dc->hwss.interdependent_update_lock(dc, context, false);
-		if (mpcc_disconnected)
-			dc->hwss.wait_for_pending_cleared(dc, context);
 	}
 
 	for (j = 0; j < dc->res_pool->pipe_count; j++) {
@@ -2460,7 +2454,6 @@ static void commit_planes_for_stream(struct dc *dc,
 		 *  top_pipe_to_program is expected to never be NULL
 		 */
 		dc->hwss.pipe_control_lock(dc, top_pipe_to_program, true);
-
 
 	// Stream updates
 	if (stream_update)
@@ -2641,9 +2634,8 @@ static void commit_planes_for_stream(struct dc *dc,
 	for (j = 0; j < dc->res_pool->pipe_count; j++) {
 		struct pipe_ctx *pipe_ctx = &context->res_ctx.pipe_ctx[j];
 
-		if (pipe_ctx->bottom_pipe ||
-				!pipe_ctx->stream ||
-				pipe_ctx->stream != stream ||
+		if (pipe_ctx->bottom_pipe || pipe_ctx->next_odm_pipe ||
+				!pipe_ctx->stream || pipe_ctx->stream != stream ||
 				!pipe_ctx->plane_state->update_flags.bits.addr_update)
 			continue;
 
@@ -2724,6 +2716,8 @@ void dc_commit_updates_for_stream(struct dc *dc,
 		}
 	}
 
+	TRACE_DC_PIPE_STATE(pipe_ctx, i, MAX_PIPES);
+
 	commit_planes_for_stream(
 				dc,
 				srf_updates,
@@ -2748,8 +2742,14 @@ void dc_commit_updates_for_stream(struct dc *dc,
 		}
 	}
 	/*let's use current_state to update watermark etc*/
-	if (update_type >= UPDATE_TYPE_FULL)
+	if (update_type >= UPDATE_TYPE_FULL) {
 		dc_post_update_surfaces_to_stream(dc);
+
+		if (dc_ctx->dce_version >= DCE_VERSION_MAX)
+			TRACE_DCN_CLOCK_STATE(&context->bw_ctx.bw.dcn.clk);
+		else
+			TRACE_DCE_CLOCK_STATE(&context->bw_ctx.bw.dce);
+	}
 
 	return;
 
@@ -3052,7 +3052,7 @@ bool dc_set_psr_allow_active(struct dc *dc, bool enable)
 	return true;
 }
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 
 void dc_allow_idle_optimizations(struct dc *dc, bool allow)
 {
@@ -3103,5 +3103,12 @@ bool dc_is_plane_eligible_for_idle_optimizaitons(struct dc *dc,
 						 struct dc_plane_state *plane)
 {
 	return false;
+}
+
+/* cleanup on driver unload */
+void dc_hardware_release(struct dc *dc)
+{
+	if (dc->hwss.hardware_release)
+		dc->hwss.hardware_release(dc);
 }
 #endif
