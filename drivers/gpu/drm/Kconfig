@@ -182,13 +182,6 @@ config DRM_TTM
 	  GPU memory types. Will be enabled automatically if a device driver
 	  uses it.
 
-config DRM_TTM_DMA_PAGE_POOL
-	bool
-	depends on DRM_TTM && (SWIOTLB || INTEL_IOMMU)
-	default y
-	help
-	  Choose this if you need the TTM dma page pool
-
 config DRM_VRAM_HELPER
 	tristate
 	depends on DRM
@@ -274,6 +267,8 @@ source "drivers/gpu/drm/amd/amdgpu/Kconfig"
 source "drivers/gpu/drm/nouveau/Kconfig"
 
 source "drivers/gpu/drm/i915/Kconfig"
+
+source "drivers/gpu/drm/kmb/Kconfig"
 
 config DRM_VGEM
 	tristate "Virtual GEM provider"
