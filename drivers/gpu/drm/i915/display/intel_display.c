@@ -17223,7 +17223,7 @@ static void intel_setup_outputs(struct drm_i915_private *dev_priv)
 		intel_ddi_init(dev_priv, PORT_B);
 		intel_ddi_init(dev_priv, PORT_TC1);
 		intel_ddi_init(dev_priv, PORT_TC2);
-		intel_ddi_init(dev_priv, PORT_TC2);
+		intel_ddi_init(dev_priv, PORT_TC3);
 		intel_ddi_init(dev_priv, PORT_TC4);
 		intel_ddi_init(dev_priv, PORT_TC5);
 		intel_ddi_init(dev_priv, PORT_TC6);
@@ -18372,8 +18372,6 @@ int intel_modeset_init(struct drm_i915_private *i915)
 	intel_hpd_poll_disable(i915);
 
 	intel_init_ipc(i915);
-
-	intel_psr_set_force_mode_changed(i915->psr.dp);
 
 	return 0;
 }
