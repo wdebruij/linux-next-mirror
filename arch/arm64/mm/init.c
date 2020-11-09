@@ -276,7 +276,7 @@ static void __init fdt_enforce_memory_region(void)
 
 void __init arm64_memblock_init(void)
 {
-	const s64 linear_region_size = BIT(vabits_actual - 1);
+	const s64 linear_region_size = PAGE_END - _PAGE_OFFSET(vabits_actual);
 
 	/* Handle linux,usable-memory-range property */
 	fdt_enforce_memory_region();
@@ -509,6 +509,8 @@ static void __init free_unused_memmap(void)
  */
 void __init mem_init(void)
 {
+	BUILD_BUG_ON(!is_power_of_2(sizeof(struct page)));
+
 	if (swiotlb_force == SWIOTLB_FORCE ||
 	    max_pfn > PFN_DOWN(arm64_dma_phys_limit ? : arm64_dma32_phys_limit))
 		swiotlb_init(1);
