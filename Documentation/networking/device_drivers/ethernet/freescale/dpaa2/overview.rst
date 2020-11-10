@@ -28,6 +28,9 @@ interfaces, an L2 switch, or accelerator instances.
 The MC provides memory-mapped I/O command interfaces (MC portals)
 which DPAA2 software drivers use to operate on DPAA2 objects.
 
+MC firmware binary images can be found here:
+https://github.com/NXP/qoriq-mc-binary
+
 The diagram below shows an overview of the DPAA2 resource management
 architecture::
 
@@ -338,7 +341,7 @@ Key functions include:
   a bind of the root DPRC to the DPRC driver
 
 The binding for the MC-bus device-tree node can be consulted at
-*Documentation/devicetree/bindings/misc/fsl,qoriq-mc.txt*.
+*Documentation/devicetree/bindings/misc/fsl,qoriq-mc.yaml*.
 The sysfs bind/unbind interfaces for the MC-bus can be consulted at
 *Documentation/ABI/testing/sysfs-bus-fsl-mc*.
 
