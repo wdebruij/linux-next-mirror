@@ -2717,7 +2717,7 @@ static void io_complete_rw_iopoll(struct kiocb *kiocb, long res, long res2)
  * find it from a io_iopoll_getevents() thread before the issuer is done
  * accessing the kiocb cookie.
  */
-static void io_iopoll_req_issued(struct io_kiocb *req)
+static void io_iopoll_req_issued(struct io_kiocb *req, bool in_async)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 
@@ -2746,7 +2746,12 @@ static void io_iopoll_req_issued(struct io_kiocb *req)
 	else
 		list_add_tail(&req->inflight_entry, &ctx->iopoll_list);
 
-	if ((ctx->flags & IORING_SETUP_SQPOLL) &&
+	/*
+	 * If IORING_SETUP_SQPOLL is enabled, sqes are either handled in sq thread
+	 * task context or in io worker task context. If current task context is
+	 * sq thread, we don't need to check whether should wake up sq thread.
+	 */
+	if (in_async && (ctx->flags & IORING_SETUP_SQPOLL) &&
 	    wq_has_sleeper(&ctx->sq_data->wait))
 		wake_up(&ctx->sq_data->wait);
 }
@@ -6221,7 +6226,7 @@ static int io_issue_sqe(struct io_kiocb *req, bool force_nonblock,
 		if (in_async)
 			mutex_lock(&ctx->uring_lock);
 
-		io_iopoll_req_issued(req);
+		io_iopoll_req_issued(req, in_async);
 
 		if (in_async)
 			mutex_unlock(&ctx->uring_lock);
@@ -6827,23 +6832,19 @@ static int __io_sq_thread(struct io_ring_ctx *ctx, bool cap_entries)
 	unsigned int to_submit;
 	int ret = 0;
 
-	if (!list_empty(&ctx->iopoll_list)) {
-		unsigned nr_events = 0;
-
-		mutex_lock(&ctx->uring_lock);
-		if (!list_empty(&ctx->iopoll_list))
-			io_do_iopoll(ctx, &nr_events, 0);
-		mutex_unlock(&ctx->uring_lock);
-	}
-
 	to_submit = io_sqring_entries(ctx);
 	/* if we're handling multiple rings, cap submit size for fairness */
 	if (cap_entries && to_submit > 8)
 		to_submit = 8;
 
-	if (to_submit) {
+	if (!list_empty(&ctx->iopoll_list) || to_submit) {
+		unsigned nr_events = 0;
+
 		mutex_lock(&ctx->uring_lock);
-		if (likely(!percpu_ref_is_dying(&ctx->refs)))
+		if (!list_empty(&ctx->iopoll_list))
+			io_do_iopoll(ctx, &nr_events, 0);
+
+		if (to_submit && likely(!percpu_ref_is_dying(&ctx->refs)))
 			ret = io_submit_sqes(ctx, to_submit);
 		mutex_unlock(&ctx->uring_lock);
 	}
@@ -6889,7 +6890,7 @@ static int io_sq_thread(void *data)
 	const struct cred *old_cred = NULL;
 	struct io_sq_data *sqd = data;
 	struct io_ring_ctx *ctx;
-	unsigned long timeout;
+	unsigned long timeout = 0;
 	DEFINE_WAIT(wait);
 
 	task_lock(current);
