@@ -149,7 +149,7 @@ config MTD_NAND_ATMEL
 
 config MTD_NAND_ORION
 	tristate "Marvell Orion NAND controller"
-	depends on PLAT_ORION
+	depends on PLAT_ORION || COMPILE_TEST
 	help
 	  This enables the NAND flash controller on Orion machines.
 
