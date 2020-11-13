@@ -439,6 +439,11 @@ void __kasan_poison_kfree(void *ptr, unsigned long ip)
 	struct page *page;
 
 	page = virt_to_head_page(ptr);
+
+	if (!PageSlab(page)) {
+		return;
+	}
+
 	____kasan_slab_free(page->slab_cache, ptr, ip, false);
 }
 
