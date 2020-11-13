@@ -69,7 +69,9 @@ static int secretmem_memcg_charge(struct page *page, gfp_t gfp, int order)
 	for (i = 1; i < nr_pages; i++) {
 		struct page *p = page + i;
 
+#ifdef CONFIG_MEMCG
 		p->memcg_data = page->memcg_data;
+#endif
 	}
 
 	return 0;
@@ -83,7 +85,9 @@ static void secretmem_memcg_uncharge(struct page *page, int order)
 	for (i = 1; i < nr_pages; i++) {
 		struct page *p = page + i;
 
+#ifdef CONFIG_MEMCG
 		p->memcg_data = 0;
+#endif
 	}
 
 	memcg_kmem_uncharge_page(page, PMD_PAGE_ORDER);
