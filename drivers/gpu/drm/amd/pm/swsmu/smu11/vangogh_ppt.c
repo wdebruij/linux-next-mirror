@@ -635,6 +635,11 @@ static ssize_t vangogh_get_gpu_metrics(struct smu_context *smu,
 	return sizeof(struct gpu_metrics_v2_0);
 }
 
+static int vangogh_mode2_reset(struct smu_context *smu)
+{
+	return smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_GfxDeviceDriverReset, SMU_RESET_MODE_2, NULL);
+}
+
 static const struct pptable_funcs vangogh_ppt_funcs = {
 
 	.check_fw_status = smu_v11_0_check_fw_status,
@@ -659,6 +664,7 @@ static const struct pptable_funcs vangogh_ppt_funcs = {
 	.disable_all_features_with_exception = smu_cmn_disable_all_features_with_exception,
 	.interrupt_work = smu_v11_0_interrupt_work,
 	.get_gpu_metrics = vangogh_get_gpu_metrics,
+	.mode2_reset = vangogh_mode2_reset,
 };
 
 void vangogh_set_ppt_funcs(struct smu_context *smu)
