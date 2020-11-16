@@ -3847,96 +3847,10 @@ modifier_gfx9_swizzle_mode(uint64_t modifier)
 	return AMD_FMT_MOD_GET(TILE, modifier);
 }
 
-static const struct drm_format_info dcc_formats[] = {
-	{ .format = DRM_FORMAT_XRGB8888, .depth = 24, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	 { .format = DRM_FORMAT_XBGR8888, .depth = 24, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_ARGB8888, .depth = 32, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	   .has_alpha = true, },
-	{ .format = DRM_FORMAT_ABGR8888, .depth = 32, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_BGRA8888, .depth = 32, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_XRGB2101010, .depth = 30, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_XBGR2101010, .depth = 30, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_ARGB2101010, .depth = 30, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_ABGR2101010, .depth = 30, .num_planes = 2,
-	  .cpp = { 4, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_RGB565, .depth = 16, .num_planes = 2,
-	  .cpp = { 2, 0, }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-};
-
-static const struct drm_format_info dcc_retile_formats[] = {
-	{ .format = DRM_FORMAT_XRGB8888, .depth = 24, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	 { .format = DRM_FORMAT_XBGR8888, .depth = 24, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_ARGB8888, .depth = 32, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	   .has_alpha = true, },
-	{ .format = DRM_FORMAT_ABGR8888, .depth = 32, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_BGRA8888, .depth = 32, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_XRGB2101010, .depth = 30, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_XBGR2101010, .depth = 30, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-	{ .format = DRM_FORMAT_ARGB2101010, .depth = 30, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_ABGR2101010, .depth = 30, .num_planes = 3,
-	  .cpp = { 4, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1,
-	  .has_alpha = true, },
-	{ .format = DRM_FORMAT_RGB565, .depth = 16, .num_planes = 3,
-	  .cpp = { 2, 0, 0 }, .block_w = {1, 1, 1}, .block_h = {1, 1, 1}, .hsub = 1, .vsub = 1, },
-};
-
-
-static const struct drm_format_info *
-lookup_format_info(const struct drm_format_info formats[],
-		  int num_formats, u32 format)
-{
-	int i;
-
-	for (i = 0; i < num_formats; i++) {
-		if (formats[i].format == format)
-			return &formats[i];
-	}
-
-	return NULL;
-}
-
 static const struct drm_format_info *
 amd_get_format_info(const struct drm_mode_fb_cmd2 *cmd)
 {
-	uint64_t modifier = cmd->modifier[0];
-
-	if (!IS_AMD_FMT_MOD(modifier))
-		return NULL;
-
-	if (AMD_FMT_MOD_GET(DCC_RETILE, modifier))
-		return lookup_format_info(dcc_retile_formats,
-					  ARRAY_SIZE(dcc_retile_formats),
-					  cmd->pixel_format);
-
-	if (AMD_FMT_MOD_GET(DCC, modifier))
-		return lookup_format_info(dcc_formats, ARRAY_SIZE(dcc_formats),
-					  cmd->pixel_format);
-
-	/* returning NULL will cause the default format structs to be used. */
-	return NULL;
+	return amdgpu_lookup_format_info(cmd->pixel_format, cmd->modifier[0]);
 }
 
 static void
@@ -6846,7 +6760,7 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
 
 	encoder = amdgpu_dm_connector_to_encoder(connector);
 
-	if (!edid || !drm_edid_is_valid(edid)) {
+	if (!drm_edid_is_valid(edid)) {
 		amdgpu_dm_connector->num_modes =
 				drm_add_modes_noedid(connector, 640, 480);
 	} else {
@@ -8048,6 +7962,16 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
 			new_crtc_state->mode_changed,
 			new_crtc_state->active_changed,
 			new_crtc_state->connectors_changed);
+
+		/* Disable cursor if disabling crtc */
+		if (old_crtc_state->active && !new_crtc_state->active) {
+			struct dc_cursor_position position;
+
+			memset(&position, 0, sizeof(position));
+			mutex_lock(&dm->dc_lock);
+			dc_stream_set_cursor_position(dm_old_crtc_state->stream, &position);
+			mutex_unlock(&dm->dc_lock);
+		}
 
 		/* Copy all transient state flags into dc state */
 		if (dm_new_crtc_state->stream) {
@@ -9611,7 +9535,7 @@ bool amdgpu_dm_psr_enable(struct dc_stream_state *stream)
 					   &stream, 1,
 					   &params);
 
-	return dc_link_set_psr_allow_active(link, true, false);
+	return dc_link_set_psr_allow_active(link, true, false, false);
 }
 
 /*
@@ -9625,7 +9549,7 @@ static bool amdgpu_dm_psr_disable(struct dc_stream_state *stream)
 
 	DRM_DEBUG_DRIVER("Disabling psr...\n");
 
-	return dc_link_set_psr_allow_active(stream->link, false, true);
+	return dc_link_set_psr_allow_active(stream->link, false, true, false);
 }
 
 /*
