@@ -1004,6 +1004,7 @@ s_cbFillTxBufHead(struct vnt_private *pDevice, unsigned char byPktType,
 		switch (info->control.hw_key->cipher) {
 		case WLAN_CIPHER_SUITE_CCMP:
 			cbMICHDR = sizeof(struct vnt_mic_hdr);
+			break;
 		default:
 			break;
 		}
@@ -1318,6 +1319,7 @@ int vnt_generate_fifo_header(struct vnt_private *priv, u32 dma_idx,
 			break;
 		case WLAN_CIPHER_SUITE_CCMP:
 			tx_buffer_head->frag_ctl |= cpu_to_le16(FRAGCTL_AES);
+			break;
 		default:
 			break;
 		}
