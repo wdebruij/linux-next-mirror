@@ -238,7 +238,6 @@ struct adp5589_kpad {
 	bool support_row5;
 #ifdef CONFIG_GPIOLIB
 	unsigned char gpiomap[ADP5589_MAXGPIO];
-	bool export_gpio;
 	struct gpio_chip gc;
 	struct mutex gpio_lock;	/* Protect cached dir, dat_out */
 	u8 dat_out[3];
@@ -512,8 +511,6 @@ static int adp5589_gpio_add(struct adp5589_kpad *kpad)
 		return 0;
 	}
 
-	kpad->export_gpio = true;
-
 	kpad->gc.direction_input = adp5589_gpio_direction_input;
 	kpad->gc.direction_output = adp5589_gpio_direction_output;
 	kpad->gc.get = adp5589_gpio_get_value;
@@ -526,11 +523,9 @@ static int adp5589_gpio_add(struct adp5589_kpad *kpad)
 
 	mutex_init(&kpad->gpio_lock);
 
-	error = gpiochip_add_data(&kpad->gc, kpad);
-	if (error) {
-		dev_err(dev, "gpiochip_add_data() failed, err: %d\n", error);
+	error = devm_gpiochip_add_data(dev, &kpad->gc, kpad);
+	if (error)
 		return error;
-	}
 
 	for (i = 0; i <= kpad->var->bank(kpad->var->maxgpio); i++) {
 		kpad->dat_out[i] = adp5589_read(kpad->client, kpad->var->reg(
@@ -539,45 +534,12 @@ static int adp5589_gpio_add(struct adp5589_kpad *kpad)
 					    ADP5589_GPIO_DIRECTION_A) + i);
 	}
 
-	if (gpio_data->setup) {
-		error = gpio_data->setup(kpad->client,
-					 kpad->gc.base, kpad->gc.ngpio,
-					 gpio_data->context);
-		if (error)
-			dev_warn(dev, "setup failed, %d\n", error);
-	}
-
 	return 0;
-}
-
-static void adp5589_gpio_remove(struct adp5589_kpad *kpad)
-{
-	struct device *dev = &kpad->client->dev;
-	const struct adp5589_kpad_platform_data *pdata = dev_get_platdata(dev);
-	const struct adp5589_gpio_platform_data *gpio_data = pdata->gpio_data;
-	int error;
-
-	if (!kpad->export_gpio)
-		return;
-
-	if (gpio_data->teardown) {
-		error = gpio_data->teardown(kpad->client,
-					    kpad->gc.base, kpad->gc.ngpio,
-					    gpio_data->context);
-		if (error)
-			dev_warn(dev, "teardown failed %d\n", error);
-	}
-
-	gpiochip_remove(&kpad->gc);
 }
 #else
 static inline int adp5589_gpio_add(struct adp5589_kpad *kpad)
 {
 	return 0;
-}
-
-static inline void adp5589_gpio_remove(struct adp5589_kpad *kpad)
-{
 }
 #endif
 
@@ -909,7 +871,7 @@ static int adp5589_keypad_add(struct adp5589_kpad *kpad, unsigned int revid)
 		return -EINVAL;
 	}
 
-	input = input_allocate_device();
+	input = devm_input_allocate_device(&client->dev);
 	if (!input)
 		return -ENOMEM;
 
@@ -955,36 +917,29 @@ static int adp5589_keypad_add(struct adp5589_kpad *kpad, unsigned int revid)
 	error = input_register_device(input);
 	if (error) {
 		dev_err(&client->dev, "unable to register input device\n");
-		goto err_free_input;
+		return error;
 	}
 
-	error = request_threaded_irq(client->irq, NULL, adp5589_irq,
-				     IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				     client->dev.driver->name, kpad);
+	error = devm_request_threaded_irq(&client->dev, client->irq,
+					  NULL, adp5589_irq,
+					  IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					  client->dev.driver->name, kpad);
 	if (error) {
-		dev_err(&client->dev, "irq %d busy?\n", client->irq);
-		goto err_unreg_dev;
+		dev_err(&client->dev, "unable to request irq %d\n", client->irq);
+		return error;
 	}
 
 	device_init_wakeup(&client->dev, 1);
 
 	return 0;
-
-err_unreg_dev:
-	input_unregister_device(input);
-	input = NULL;
-err_free_input:
-	input_free_device(input);
-
-	return error;
 }
 
-static void adp5589_keypad_remove(struct adp5589_kpad *kpad)
+static void adp5589_clear_config(void *data)
 {
-	if (kpad->input) {
-		free_irq(kpad->client->irq, kpad);
-		input_unregister_device(kpad->input);
-	}
+	struct i2c_client *client = data;
+	struct adp5589_kpad *kpad = i2c_get_clientdata(client);
+
+	adp5589_write(client, kpad->var->reg(ADP5589_GENERAL_CFG), 0);
 }
 
 static int adp5589_probe(struct i2c_client *client,
@@ -1007,7 +962,7 @@ static int adp5589_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	kpad = kzalloc(sizeof(*kpad), GFP_KERNEL);
+	kpad = devm_kzalloc(&client->dev, sizeof(*kpad), GFP_KERNEL);
 	if (!kpad)
 		return -ENOMEM;
 
@@ -1027,53 +982,37 @@ static int adp5589_probe(struct i2c_client *client,
 		break;
 	}
 
+	error = devm_add_action_or_reset(&client->dev, adp5589_clear_config,
+					 client);
+	if (error)
+		return error;
+
 	ret = adp5589_read(client, ADP5589_5_ID);
-	if (ret < 0) {
-		error = ret;
-		goto err_free_mem;
-	}
+	if (ret < 0)
+		return ret;
 
 	revid = (u8) ret & ADP5589_5_DEVICE_ID_MASK;
 
 	if (pdata->keymapsize) {
 		error = adp5589_keypad_add(kpad, revid);
 		if (error)
-			goto err_free_mem;
+			return error;
 	}
 
 	error = adp5589_setup(kpad);
 	if (error)
-		goto err_keypad_remove;
+		return error;
 
 	if (kpad->gpimapsize)
 		adp5589_report_switch_state(kpad);
 
 	error = adp5589_gpio_add(kpad);
 	if (error)
-		goto err_keypad_remove;
+		return error;
 
 	i2c_set_clientdata(client, kpad);
 
 	dev_info(&client->dev, "Rev.%d keypad, irq %d\n", revid, client->irq);
-	return 0;
-
-err_keypad_remove:
-	adp5589_keypad_remove(kpad);
-err_free_mem:
-	kfree(kpad);
-
-	return error;
-}
-
-static int adp5589_remove(struct i2c_client *client)
-{
-	struct adp5589_kpad *kpad = i2c_get_clientdata(client);
-
-	adp5589_write(client, kpad->var->reg(ADP5589_GENERAL_CFG), 0);
-	adp5589_keypad_remove(kpad);
-	adp5589_gpio_remove(kpad);
-	kfree(kpad);
-
 	return 0;
 }
 
@@ -1128,7 +1067,6 @@ static struct i2c_driver adp5589_driver = {
 		.pm = &adp5589_dev_pm_ops,
 	},
 	.probe = adp5589_probe,
-	.remove = adp5589_remove,
 	.id_table = adp5589_id,
 };
 
