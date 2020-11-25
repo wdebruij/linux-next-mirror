@@ -3196,6 +3196,7 @@ extern int __generic_file_fsync(struct file *, loff_t, loff_t, int);
 extern int generic_file_fsync(struct file *, loff_t, loff_t, int);
 
 extern int generic_check_addressable(unsigned, u64);
+extern u64 generic_fetch_iversion(struct inode *inode);
 
 #ifdef CONFIG_UNICODE
 extern int generic_ci_d_hash(const struct dentry *dentry, struct qstr *str);
