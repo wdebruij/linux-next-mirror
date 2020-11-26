@@ -453,11 +453,12 @@ config SENSORS_CORSAIR_PSU
 	tristate "Corsair PSU HID controller"
 	depends on HID
 	help
-	  If you say yes here you get support for Corsair PSUs with a HID
+	  If you say yes here you get support for Corsair PSUs with an USB HID
 	  interface.
 	  Currently this driver supports the (RM/HX)550i, (RM/HX)650i,
-	  (RM/HX)750i, (RM/HX)850i, (RM/HX)1000i and HX1200i power supplies
-	  by Corsair.
+	  (RM/HX)750i, (RM/HX)850i, (RM/HX)1000i, HX1200i and AX1600i power
+	  supplies by Corsair. The AX760i, AX860i, AX1200i and AX1500i
+	  power supplies are supported through the Corsair Link USB Dongle.
 
 	  This driver can also be built as a module. If so, the module
 	  will be called corsair-psu.

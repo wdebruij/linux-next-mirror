@@ -7,6 +7,16 @@ Supported devices:
 
 * Corsair Power Supplies
 
+  Corsair AX760i (by Corsair Link USB Dongle)
+
+  Corsair AX860i (by Corsair Link USB Dongle)
+
+  Corsair AX1200i (by Corsair Link USB Dongle)
+
+  Corsair AX1500i (by builtin Corsair Link USB Dongle)
+
+  Corsair AX1600i
+
   Corsair HX550i
 
   Corsair HX650i

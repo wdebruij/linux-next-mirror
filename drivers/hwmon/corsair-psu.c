@@ -571,17 +571,28 @@ static int corsairpsu_raw_event(struct hid_device *hdev, struct hid_report *repo
 }
 
 static const struct hid_device_id corsairpsu_idtable[] = {
-	{ HID_USB_DEVICE(0x1b1c, 0x1c03) }, /* Corsair HX550i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c04) }, /* Corsair HX650i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c05) }, /* Corsair HX750i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c06) }, /* Corsair HX850i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c07) }, /* Corsair HX1000i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c08) }, /* Corsair HX1200i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c09) }, /* Corsair RM550i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c0a) }, /* Corsair RM650i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c0b) }, /* Corsair RM750i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c0c) }, /* Corsair RM850i */
-	{ HID_USB_DEVICE(0x1b1c, 0x1c0d) }, /* Corsair RM1000i */
+	/*
+	 * The Corsair USB/COM Dongles appear in at least 3 different revisions, where rev 1 and 2
+	 * are commonly used with the AX760i, AX860i and AX1200i, while rev3 is rarely seen with
+	 * these PSUs. Rev3 is also build into the AX1500i, while the AX1600i is the first PSU of
+	 * this series which has an unique usb hid id. Though, the actual device name is part of
+	 * the HID message protocol, so it doesn't matter which dongle is connected.
+	 */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C00) }, /* Corsair Link USB/COM Dongle rev1 */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C01) }, /* Corsair Link USB/COM Dongle rev2 */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C02) }, /* Corsair Link USB/COM Dongle rev3 (AX1500i) */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C03) }, /* Corsair HX550i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C04) }, /* Corsair HX650i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C05) }, /* Corsair HX750i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C06) }, /* Corsair HX850i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C07) }, /* Corsair HX1000i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C08) }, /* Corsair HX1200i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C09) }, /* Corsair RM550i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C0A) }, /* Corsair RM650i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C0B) }, /* Corsair RM750i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C0C) }, /* Corsair RM850i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C0D) }, /* Corsair RM1000i */
+	{ HID_USB_DEVICE(0x1B1C, 0x1C11) }, /* Corsair AX1600i */
 	{ },
 };
 MODULE_DEVICE_TABLE(hid, corsairpsu_idtable);
