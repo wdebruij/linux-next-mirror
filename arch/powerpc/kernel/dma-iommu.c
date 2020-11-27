@@ -10,6 +10,8 @@
 #include <linux/pci.h>
 #include <asm/iommu.h>
 
+#ifdef CONFIG_ARCH_HAS_DMA_MAP_DIRECT
+
 #define can_map_direct(dev, addr) \
 	((dev)->bus_dma_limit >= phys_to_dma((dev), (addr)))
 
@@ -64,6 +66,7 @@ bool arch_dma_unmap_sg_direct(struct device *dev, struct scatterlist *sg,
 
 	return true;
 }
+#endif /* CONFIG_ARCH_HAS_DMA_MAP_DIRECT */
 
 /*
  * Generic iommu implementation
