@@ -129,9 +129,10 @@ enum {
 	SERV_TYPE_UD,
 };
 
-enum {
+enum hns_roce_qp_caps {
 	HNS_ROCE_QP_CAP_RQ_RECORD_DB = BIT(0),
 	HNS_ROCE_QP_CAP_SQ_RECORD_DB = BIT(1),
+	HNS_ROCE_QP_CAP_OWNER_DB = BIT(2),
 };
 
 enum hns_roce_cq_flags {
@@ -221,6 +222,7 @@ enum {
 	HNS_ROCE_CAP_FLAG_FRMR                  = BIT(8),
 	HNS_ROCE_CAP_FLAG_QP_FLOW_CTRL		= BIT(9),
 	HNS_ROCE_CAP_FLAG_ATOMIC		= BIT(10),
+	HNS_ROCE_CAP_FLAG_SDI_MODE		= BIT(14),
 };
 
 #define HNS_ROCE_DB_TYPE_COUNT			2
@@ -264,9 +266,6 @@ enum {
 /* The minimum page size is 4K for hardware */
 #define HNS_HW_PAGE_SHIFT			12
 #define HNS_HW_PAGE_SIZE			(1 << HNS_HW_PAGE_SHIFT)
-
-/* The minimum page count for hardware access page directly. */
-#define HNS_HW_DIRECT_PAGE_COUNT 2
 
 struct hns_roce_uar {
 	u64		pfn;
@@ -419,11 +418,26 @@ struct hns_roce_buf_list {
 	dma_addr_t	map;
 };
 
+/*
+ * %HNS_ROCE_BUF_DIRECT indicates that the all memory must be in a continuous
+ * dma address range.
+ *
+ * %HNS_ROCE_BUF_NOSLEEP indicates that the caller cannot sleep.
+ *
+ * %HNS_ROCE_BUF_NOFAIL allocation only failed when allocated size is zero, even
+ * the allocated size is smaller than the required size.
+ */
+enum {
+	HNS_ROCE_BUF_DIRECT = BIT(0),
+	HNS_ROCE_BUF_NOSLEEP = BIT(1),
+	HNS_ROCE_BUF_NOFAIL = BIT(2),
+};
+
 struct hns_roce_buf {
-	struct hns_roce_buf_list	direct;
-	struct hns_roce_buf_list	*page_list;
+	struct hns_roce_buf_list	*trunk_list;
+	u32				ntrunks;
 	u32				npages;
-	u32				size;
+	unsigned int			trunk_shift;
 	unsigned int			page_shift;
 };
 
@@ -825,6 +839,7 @@ struct hns_roce_caps {
 	u32		cqc_timer_bt_num;
 	u32		mpt_bt_num;
 	u32		sccc_bt_num;
+	u32		gmv_bt_num;
 	u32		qpc_ba_pg_sz;
 	u32		qpc_buf_pg_sz;
 	u32		qpc_hop_num;
@@ -864,6 +879,11 @@ struct hns_roce_caps {
 	u32		eqe_ba_pg_sz;
 	u32		eqe_buf_pg_sz;
 	u32		eqe_hop_num;
+	u32		gmv_entry_num;
+	u32		gmv_entry_sz;
+	u32		gmv_ba_pg_sz;
+	u32		gmv_buf_pg_sz;
+	u32		gmv_hop_num;
 	u32		sl_num;
 	u32		tsq_buf_pg_sz;
 	u32		tpq_buf_pg_sz;
@@ -999,6 +1019,10 @@ struct hns_roce_dev {
 	struct hns_roce_eq_table  eq_table;
 	struct hns_roce_hem_table  qpc_timer_table;
 	struct hns_roce_hem_table  cqc_timer_table;
+	/* GMV is the memory area that the driver allocates for the hardware
+	 * to store SGID, SMAC and VLAN information.
+	 */
+	struct hns_roce_hem_table  gmv_table;
 
 	int			cmd_mod;
 	int			loop_idc;
@@ -1069,29 +1093,18 @@ static inline struct hns_roce_qp
 	return xa_load(&hr_dev->qp_table_xa, qpn & (hr_dev->caps.num_qps - 1));
 }
 
-static inline bool hns_roce_buf_is_direct(struct hns_roce_buf *buf)
-{
-	if (buf->page_list)
-		return false;
-
-	return true;
-}
-
 static inline void *hns_roce_buf_offset(struct hns_roce_buf *buf, int offset)
 {
-	if (hns_roce_buf_is_direct(buf))
-		return (char *)(buf->direct.buf) + (offset & (buf->size - 1));
-
-	return (char *)(buf->page_list[offset >> buf->page_shift].buf) +
-	       (offset & ((1 << buf->page_shift) - 1));
+	return (char *)(buf->trunk_list[offset >> buf->trunk_shift].buf) +
+			(offset & ((1 << buf->trunk_shift) - 1));
 }
 
 static inline dma_addr_t hns_roce_buf_page(struct hns_roce_buf *buf, int idx)
 {
-	if (hns_roce_buf_is_direct(buf))
-		return buf->direct.map + ((dma_addr_t)idx << buf->page_shift);
-	else
-		return buf->page_list[idx].map;
+	int offset = idx << buf->page_shift;
+
+	return buf->trunk_list[offset >> buf->trunk_shift].map +
+			(offset & ((1 << buf->trunk_shift) - 1));
 }
 
 #define hr_hw_page_align(x)		ALIGN(x, 1 << HNS_HW_PAGE_SHIFT)
@@ -1215,8 +1228,8 @@ int hns_roce_alloc_mw(struct ib_mw *mw, struct ib_udata *udata);
 int hns_roce_dealloc_mw(struct ib_mw *ibmw);
 
 void hns_roce_buf_free(struct hns_roce_dev *hr_dev, struct hns_roce_buf *buf);
-int hns_roce_buf_alloc(struct hns_roce_dev *hr_dev, u32 size, u32 max_direct,
-		       struct hns_roce_buf *buf, u32 page_shift);
+struct hns_roce_buf *hns_roce_buf_alloc(struct hns_roce_dev *hr_dev, u32 size,
+					u32 page_shift, u32 flags);
 
 int hns_roce_get_kmem_bufs(struct hns_roce_dev *hr_dev, dma_addr_t *bufs,
 			   int buf_cnt, int start, struct hns_roce_buf *buf);
