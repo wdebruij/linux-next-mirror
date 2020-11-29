@@ -610,20 +610,17 @@ mem_cgroup_nodeinfo(struct mem_cgroup *memcg, int nid)
 static inline struct lruvec *mem_cgroup_lruvec(struct mem_cgroup *memcg,
 					       struct pglist_data *pgdat)
 {
-	struct mem_cgroup_per_node *mz;
 	struct lruvec *lruvec;
 
-	if (mem_cgroup_disabled()) {
+	if (mem_cgroup_disabled() || !memcg) {
 		lruvec = &pgdat->__lruvec;
-		goto out;
+	} else {
+		struct mem_cgroup_per_node *mz;
+
+		mz = mem_cgroup_nodeinfo(memcg, pgdat->node_id);
+		lruvec = &mz->lruvec;
 	}
 
-	if (!memcg)
-		memcg = root_mem_cgroup;
-
-	mz = mem_cgroup_nodeinfo(memcg, pgdat->node_id);
-	lruvec = &mz->lruvec;
-out:
 	/*
 	 * Since a node can be onlined after the mem_cgroup was created,
 	 * we have to be prepared to initialize lruvec->pgdat here;
