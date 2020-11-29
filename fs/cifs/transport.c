@@ -338,10 +338,8 @@ __smb_send_rqst(struct TCP_Server_Info *server, int num_rqst,
 	if (ssocket == NULL)
 		return -EAGAIN;
 
-	if (signal_pending(current)) {
-		cifs_dbg(FYI, "signal is pending before sending any data\n");
-		return -EINTR;
-	}
+	if (signal_pending(current))
+		return -ERESTARTSYS;
 
 	/* cork the socket */
 	tcp_sock_set_cork(ssocket->sk, true);
