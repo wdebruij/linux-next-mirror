@@ -151,6 +151,10 @@ config CLK_R8A779A0
 	select CLK_RENESAS_CPG_MSSR
 
 config CLK_R9A06G032
+	# PPC64 RELOCATABLE kernels cannot handle relocations to
+	# unaligned locations that are produced by the array of
+	# packed structures in this driver.
+	depends on !(PPC64 && RELOCATABLE)
 	bool "Renesas R9A06G032 clock driver"
 	help
 	  This is a driver for R9A06G032 clocks
