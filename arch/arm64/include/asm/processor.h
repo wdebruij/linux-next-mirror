@@ -153,7 +153,7 @@ struct thread_struct {
 	struct ptrauth_keys_kernel	keys_kernel;
 #endif
 #ifdef CONFIG_ARM64_MTE
-	u64			gcr_user_incl;
+	u64			gcr_user_excl;
 #endif
 #ifdef CONFIG_ARM64_NEED_SCTLR_USER
 	u64			sctlr_user;
