@@ -53,6 +53,7 @@
 #include <asm/exec.h>
 #include <asm/fpsimd.h>
 #include <asm/mmu_context.h>
+#include <asm/mte.h>
 #include <asm/processor.h>
 #include <asm/pointer_auth.h>
 #include <asm/stacktrace.h>
@@ -240,7 +241,7 @@ static void print_pstate(struct pt_regs *regs)
 		const char *btype_str = btypes[(pstate & PSR_BTYPE_MASK) >>
 					       PSR_BTYPE_SHIFT];
 
-		printk("pstate: %08llx (%c%c%c%c %c%c%c%c %cPAN %cUAO BTYPE=%s)\n",
+		printk("pstate: %08llx (%c%c%c%c %c%c%c%c %cPAN %cUAO %cTCO BTYPE=%s)\n",
 			pstate,
 			pstate & PSR_N_BIT ? 'N' : 'n',
 			pstate & PSR_Z_BIT ? 'Z' : 'z',
@@ -252,6 +253,7 @@ static void print_pstate(struct pt_regs *regs)
 			pstate & PSR_F_BIT ? 'F' : 'f',
 			pstate & PSR_PAN_BIT ? '+' : '-',
 			pstate & PSR_UAO_BIT ? '+' : '-',
+			pstate & PSR_TCO_BIT ? '+' : '-',
 			btype_str);
 	}
 }
@@ -337,6 +339,7 @@ void flush_thread(void)
 	tls_thread_flush();
 	flush_ptrace_hw_breakpoint(current);
 	flush_tagged_addr_state();
+	flush_mte_state();
 }
 
 void release_thread(struct task_struct *dead_task)
@@ -368,6 +371,9 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 	 */
 	dst->thread.sve_state = NULL;
 	clear_tsk_thread_flag(dst, TIF_SVE);
+
+	/* clear any pending asynchronous tag fault raised by the parent */
+	clear_tsk_thread_flag(dst, TIF_MTE_ASYNC_FAULT);
 
 	return 0;
 }
@@ -416,16 +422,15 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 		if (clone_flags & CLONE_SETTLS)
 			p->thread.uw.tp_value = tls;
 	} else {
+		/*
+		 * A kthread has no context to ERET to, so ensure any buggy
+		 * ERET is treated as an illegal exception return.
+		 *
+		 * When a user task is created from a kthread, childregs will
+		 * be initialized by start_thread() or start_compat_thread().
+		 */
 		memset(childregs, 0, sizeof(struct pt_regs));
-		childregs->pstate = PSR_MODE_EL1h;
-		if (IS_ENABLED(CONFIG_ARM64_UAO) &&
-		    cpus_have_const_cap(ARM64_HAS_UAO))
-			childregs->pstate |= PSR_UAO_BIT;
-
-		spectre_v4_enable_task_mitigation(p);
-
-		if (system_uses_irq_prio_masking())
-			childregs->pmr_save = GIC_PRIO_IRQON;
+		childregs->pstate = PSR_MODE_EL1h | PSR_IL_BIT;
 
 		p->thread.cpu_context.x19 = stack_start;
 		p->thread.cpu_context.x20 = stk_sz;
@@ -561,6 +566,13 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	 */
 	dsb(ish);
 
+	/*
+	 * MTE thread switching must happen after the DSB above to ensure that
+	 * any asynchronous tag check faults have been logged in the TFSR*_EL1
+	 * registers.
+	 */
+	mte_thread_switch(next);
+
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
 
@@ -623,11 +635,18 @@ void arch_setup_new_exec(void)
  */
 static unsigned int tagged_addr_disabled;
 
-long set_tagged_addr_ctrl(unsigned long arg)
+long set_tagged_addr_ctrl(struct task_struct *task, unsigned long arg)
 {
-	if (is_compat_task())
+	unsigned long valid_mask = PR_TAGGED_ADDR_ENABLE;
+	struct thread_info *ti = task_thread_info(task);
+
+	if (is_compat_thread(ti))
 		return -EINVAL;
-	if (arg & ~PR_TAGGED_ADDR_ENABLE)
+
+	if (system_supports_mte())
+		valid_mask |= PR_MTE_TCF_MASK | PR_MTE_TAG_MASK;
+
+	if (arg & ~valid_mask)
 		return -EINVAL;
 
 	/*
@@ -637,20 +656,28 @@ long set_tagged_addr_ctrl(unsigned long arg)
 	if (arg & PR_TAGGED_ADDR_ENABLE && tagged_addr_disabled)
 		return -EINVAL;
 
-	update_thread_flag(TIF_TAGGED_ADDR, arg & PR_TAGGED_ADDR_ENABLE);
+	if (set_mte_ctrl(task, arg) != 0)
+		return -EINVAL;
+
+	update_ti_thread_flag(ti, TIF_TAGGED_ADDR, arg & PR_TAGGED_ADDR_ENABLE);
 
 	return 0;
 }
 
-long get_tagged_addr_ctrl(void)
+long get_tagged_addr_ctrl(struct task_struct *task)
 {
-	if (is_compat_task())
+	long ret = 0;
+	struct thread_info *ti = task_thread_info(task);
+
+	if (is_compat_thread(ti))
 		return -EINVAL;
 
-	if (test_thread_flag(TIF_TAGGED_ADDR))
-		return PR_TAGGED_ADDR_ENABLE;
+	if (test_ti_thread_flag(ti, TIF_TAGGED_ADDR))
+		ret = PR_TAGGED_ADDR_ENABLE;
 
-	return 0;
+	ret |= get_mte_ctrl(task);
+
+	return ret;
 }
 
 /*
