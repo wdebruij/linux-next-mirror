@@ -99,8 +99,8 @@ static inline void blk_rq_bio_prep(struct request *rq, struct bio *bio,
 	rq->bio = rq->biotail = bio;
 	rq->ioprio = bio_prio(bio);
 
-	if (bio->bi_disk)
-		rq->rq_disk = bio->bi_disk;
+	if (bio->bi_bdev)
+		rq->rq_disk = bio->bi_bdev->bd_disk;
 }
 
 #ifdef CONFIG_BLK_DEV_INTEGRITY
@@ -214,8 +214,6 @@ static inline void elevator_exit(struct request_queue *q,
 	blk_mq_sched_free_requests(q);
 	__elevator_exit(q, e);
 }
-
-struct block_device *__disk_get_part(struct gendisk *disk, int partno);
 
 ssize_t part_size_show(struct device *dev, struct device_attribute *attr,
 		char *buf);
