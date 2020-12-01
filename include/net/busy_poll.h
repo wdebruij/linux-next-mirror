@@ -147,7 +147,9 @@ static inline void __sk_mark_napi_id_once_xdp(struct sock *sk, unsigned int napi
 static inline void sk_mark_napi_id_once(struct sock *sk,
 					const struct sk_buff *skb)
 {
+#ifdef CONFIG_NET_RX_BUSY_POLL
 	__sk_mark_napi_id_once_xdp(sk, skb->napi_id);
+#endif
 }
 
 static inline void sk_mark_napi_id_once_xdp(struct sock *sk,
