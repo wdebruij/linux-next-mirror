@@ -141,14 +141,31 @@ static struct stack_record *depot_alloc_stack(unsigned long *entries, int size,
 	return stack;
 }
 
-#define STACK_HASH_ORDER 20
-#define STACK_HASH_SIZE (1L << STACK_HASH_ORDER)
+static unsigned int stack_hash_order = 20;
+#define STACK_HASH_SIZE (1L << stack_hash_order)
 #define STACK_HASH_MASK (STACK_HASH_SIZE - 1)
 #define STACK_HASH_SEED 0x9747b28c
 
-static struct stack_record *stack_table[STACK_HASH_SIZE] = {
-	[0 ...	STACK_HASH_SIZE - 1] = NULL
-};
+static struct stack_record **stack_table;
+
+static int __init setup_stack_hash_order(char *str)
+{
+	kstrtouint(str, 0, &stack_hash_order);
+	return 0;
+}
+early_param("stack_hash_order", setup_stack_hash_order);
+
+static int __init init_stackdepot(void)
+{
+	int i;
+
+	stack_table = kvmalloc(sizeof(struct stack_record *) * STACK_HASH_SIZE, GFP_KERNEL);
+	for (i = 0; i < STACK_HASH_SIZE; i++)
+		stack_table[i] = NULL;
+	return 0;
+}
+
+early_initcall(init_stackdepot);
 
 /* Calculate hash for a stack */
 static inline u32 hash_stack(unsigned long *entries, unsigned int size)
