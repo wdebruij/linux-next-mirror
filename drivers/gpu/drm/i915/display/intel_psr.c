@@ -1024,8 +1024,6 @@ void intel_psr_enable(struct intel_dp *intel_dp,
 	if (!CAN_PSR(dev_priv) || dev_priv->psr.dp != intel_dp)
 		return;
 
-	dev_priv->psr.force_mode_changed = false;
-
 	if (!crtc_state->has_psr)
 		return;
 
@@ -1187,6 +1185,7 @@ void intel_psr2_program_plane_sel_fetch(struct intel_plane *plane,
 {
 	struct drm_i915_private *dev_priv = to_i915(plane->base.dev);
 	enum pipe pipe = plane->pipe;
+	const struct drm_rect *clip;
 	u32 val;
 
 	if (!crtc_state->enable_psr2_sel_fetch)
@@ -1198,16 +1197,20 @@ void intel_psr2_program_plane_sel_fetch(struct intel_plane *plane,
 	if (!val || plane->id == PLANE_CURSOR)
 		return;
 
-	val = plane_state->uapi.dst.y1 << 16 | plane_state->uapi.dst.x1;
+	clip = &plane_state->psr2_sel_fetch_area;
+
+	val = (clip->y1 + plane_state->uapi.dst.y1) << 16;
+	val |= plane_state->uapi.dst.x1;
 	intel_de_write_fw(dev_priv, PLANE_SEL_FETCH_POS(pipe, plane->id), val);
 
-	val = plane_state->color_plane[color_plane].y << 16;
+	/* TODO: consider tiling and auxiliary surfaces */
+	val = (clip->y1 + plane_state->color_plane[color_plane].y) << 16;
 	val |= plane_state->color_plane[color_plane].x;
 	intel_de_write_fw(dev_priv, PLANE_SEL_FETCH_OFFSET(pipe, plane->id),
 			  val);
 
 	/* Sizes are 0 based */
-	val = ((drm_rect_height(&plane_state->uapi.src) >> 16) - 1) << 16;
+	val = (drm_rect_height(clip) - 1) << 16;
 	val |= (drm_rect_width(&plane_state->uapi.src) >> 16) - 1;
 	intel_de_write_fw(dev_priv, PLANE_SEL_FETCH_SIZE(pipe, plane->id), val);
 }
@@ -1281,7 +1284,7 @@ int intel_psr2_sel_fetch_update(struct intel_atomic_state *state,
 
 	for_each_oldnew_intel_plane_in_state(state, plane, old_plane_state,
 					     new_plane_state, i) {
-		struct drm_rect temp;
+		struct drm_rect *sel_fetch_area, temp;
 
 		if (new_plane_state->uapi.crtc != crtc_state->uapi.crtc)
 			continue;
@@ -1304,8 +1307,13 @@ int intel_psr2_sel_fetch_update(struct intel_atomic_state *state,
 		 * For now doing a selective fetch in the whole plane area,
 		 * optimizations will come in the future.
 		 */
-		temp.y1 = new_plane_state->uapi.dst.y1;
-		temp.y2 = new_plane_state->uapi.dst.y2;
+		sel_fetch_area = &new_plane_state->psr2_sel_fetch_area;
+		sel_fetch_area->y1 = new_plane_state->uapi.src.y1 >> 16;
+		sel_fetch_area->y2 = new_plane_state->uapi.src.y2 >> 16;
+
+		temp = *sel_fetch_area;
+		temp.y1 += new_plane_state->uapi.dst.y1;
+		temp.y2 += new_plane_state->uapi.dst.y2;
 		clip_area_update(&pipe_clip, &temp);
 	}
 
@@ -1333,8 +1341,6 @@ void intel_psr_update(struct intel_dp *intel_dp,
 
 	if (!CAN_PSR(dev_priv) || READ_ONCE(psr->dp) != intel_dp)
 		return;
-
-	dev_priv->psr.force_mode_changed = false;
 
 	mutex_lock(&dev_priv->psr.lock);
 
@@ -1868,41 +1874,4 @@ bool intel_psr_enabled(struct intel_dp *intel_dp)
 	mutex_unlock(&dev_priv->psr.lock);
 
 	return ret;
-}
-
-void intel_psr_atomic_check(struct drm_connector *connector,
-			    struct drm_connector_state *old_state,
-			    struct drm_connector_state *new_state)
-{
-	struct drm_i915_private *dev_priv = to_i915(connector->dev);
-	struct intel_connector *intel_connector;
-	struct intel_digital_port *dig_port;
-	struct drm_crtc_state *crtc_state;
-
-	if (!CAN_PSR(dev_priv) || !new_state->crtc ||
-	    !dev_priv->psr.force_mode_changed)
-		return;
-
-	intel_connector = to_intel_connector(connector);
-	dig_port = enc_to_dig_port(to_intel_encoder(new_state->best_encoder));
-	if (dev_priv->psr.dp != &dig_port->dp)
-		return;
-
-	crtc_state = drm_atomic_get_new_crtc_state(new_state->state,
-						   new_state->crtc);
-	crtc_state->mode_changed = true;
-}
-
-void intel_psr_set_force_mode_changed(struct intel_dp *intel_dp)
-{
-	struct drm_i915_private *dev_priv;
-
-	if (!intel_dp)
-		return;
-
-	dev_priv = dp_to_i915(intel_dp);
-	if (!CAN_PSR(dev_priv) || intel_dp != dev_priv->psr.dp)
-		return;
-
-	dev_priv->psr.force_mode_changed = true;
 }
