@@ -150,8 +150,7 @@ static struct stack_record **stack_table;
 
 static int __init setup_stack_hash_order(char *str)
 {
-	kstrtouint(str, 0, &stack_hash_order);
-	return 0;
+	return kstrtouint(str, 0, &stack_hash_order);
 }
 early_param("stack_hash_order", setup_stack_hash_order);
 
