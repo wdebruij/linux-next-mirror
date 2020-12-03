@@ -961,8 +961,11 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 						page, lstart, lend);
 				if (index > end)
 					end = indices[i] - 1;
+			} else {
+				unlock_page(page);
 			}
 		}
+
 		index = indices[i - 1] + 1;
 		pagevec_remove_exceptionals(&pvec);
 		pagevec_reinit(&pvec);
