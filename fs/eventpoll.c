@@ -2239,7 +2239,7 @@ SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
  */
 static int do_epoll_pwait(int epfd, struct epoll_event __user *events,
 			  int maxevents, struct timespec64 *to,
-			  const sigset_t __user *sigmask, size_t sigsetsize)
+			  const void __user *sigmask, size_t sigsetsize)
 {
 	int error;
 
@@ -2247,7 +2247,10 @@ static int do_epoll_pwait(int epfd, struct epoll_event __user *events,
 	 * If the caller wants a certain signal mask to be set during the wait,
 	 * we apply it here.
 	 */
-	error = set_user_sigmask(sigmask, sigsetsize);
+	if (!in_compat_syscall())
+		error = set_user_sigmask(sigmask, sigsetsize);
+	else
+		error = set_compat_user_sigmask(sigmask, sigsetsize);
 	if (error)
 		return error;
 
@@ -2288,28 +2291,6 @@ SYSCALL_DEFINE6(epoll_pwait2, int, epfd, struct epoll_event __user *, events,
 }
 
 #ifdef CONFIG_COMPAT
-static int do_compat_epoll_pwait(int epfd, struct epoll_event __user *events,
-				 int maxevents, struct timespec64 *timeout,
-				 const compat_sigset_t __user *sigmask,
-				 compat_size_t sigsetsize)
-{
-	long err;
-
-	/*
-	 * If the caller wants a certain signal mask to be set during the wait,
-	 * we apply it here.
-	 */
-	err = set_compat_user_sigmask(sigmask, sigsetsize);
-	if (err)
-		return err;
-
-	err = do_epoll_wait(epfd, events, maxevents, timeout);
-
-	restore_saved_sigmask_unless(err == -EINTR);
-
-	return err;
-}
-
 COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 		       struct epoll_event __user *, events,
 		       int, maxevents, int, timeout,
@@ -2318,9 +2299,9 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 {
 	struct timespec64 to;
 
-	return do_compat_epoll_pwait(epfd, events, maxevents,
-				     ep_timeout_to_timespec(&to, timeout),
-				     sigmask, sigsetsize);
+	return do_epoll_pwait(epfd, events, maxevents,
+			      ep_timeout_to_timespec(&to, timeout),
+			      sigmask, sigsetsize);
 }
 
 COMPAT_SYSCALL_DEFINE6(epoll_pwait2, int, epfd,
@@ -2340,8 +2321,7 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait2, int, epfd,
 			return -EINVAL;
 	}
 
-	return do_compat_epoll_pwait(epfd, events, maxevents, to,
-				     sigmask, sigsetsize);
+	return do_epoll_pwait(epfd, events, maxevents, to, sigmask, sigsetsize);
 }
 
 #endif
