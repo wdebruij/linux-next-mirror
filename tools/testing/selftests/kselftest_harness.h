@@ -283,7 +283,9 @@
 #define FIXTURE_TEARDOWN(fixture_name) \
 	void fixture_name##_teardown( \
 		struct __test_metadata __attribute__((unused)) *_metadata, \
-		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self)
+		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self, \
+		const FIXTURE_VARIANT(fixture_name) \
+			__attribute__((unused)) *variant)
 
 /**
  * FIXTURE_VARIANT(fixture_name) - Optionally called once per fixture
@@ -298,9 +300,9 @@
  *       ...
  *     };
  *
- * Defines type of constant parameters provided to FIXTURE_SETUP() and TEST_F()
- * as *variant*. Variants allow the same tests to be run with different
- * arguments.
+ * Defines type of constant parameters provided to FIXTURE_SETUP(), TEST_F() and
+ * FIXTURE_TEARDOWN as *variant*. Variants allow the same tests to be run with
+ * different arguments.
  */
 #define FIXTURE_VARIANT(fixture_name) struct _fixture_variant_##fixture_name
 
@@ -382,7 +384,7 @@
 		if (!_metadata->passed) \
 			return; \
 		fixture_name##_##test_name(_metadata, &self, variant->data); \
-		fixture_name##_teardown(_metadata, &self); \
+		fixture_name##_teardown(_metadata, &self, variant->data); \
 	} \
 	static struct __test_metadata \
 		      _##fixture_name##_##test_name##_object = { \
